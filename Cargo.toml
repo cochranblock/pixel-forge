@@ -1,0 +1,30 @@
+# Unlicense — cochranblock.org
+# Contributors: GotEmCoach, KOVA, Claude Opus 4.6
+[package]
+name = "pixel-forge"
+version = "0.1.0"
+edition = "2024"
+description = "Pixel art game asset generator. Stardew/Starbound quality. Local-first, no cloud."
+
+[[bin]]
+name = "pixel-forge"
+path = "src/main.rs"
+
+[features]
+default = ["metal"]
+metal = ["candle-core/metal", "candle-nn/metal"]
+# accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+image = "0.25"
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+hf-hub = "0.4"
+tokenizers = "0.21"
+rand = "0.8"
