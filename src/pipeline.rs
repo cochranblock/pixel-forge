@@ -23,6 +23,18 @@ const GUIDANCE_SCALE: f64 = 9.0;
 
 /// Auto-detect best device: Metal GPU on Apple Silicon, CPU fallback.
 fn best_device() -> candle_core::Device {
+    #[cfg(feature = "cuda")]
+    {
+        if candle_core::utils::cuda_is_available() {
+            match candle_core::Device::new_cuda(0) {
+                Ok(d) => {
+                    println!("  device: CUDA (NVIDIA GPU)");
+                    return d;
+                }
+                Err(e) => eprintln!("  cuda init failed: {e}, falling back"),
+            }
+        }
+    }
     #[cfg(feature = "metal")]
     {
         if candle_core::utils::metal_is_available() {
@@ -35,7 +47,7 @@ fn best_device() -> candle_core::Device {
             }
         }
     }
-    println!("  device: CPU (slow — build with --features metal for GPU)");
+    println!("  device: CPU (slow — build with --features cuda or --features metal)");
     candle_core::Device::Cpu
 }
 
