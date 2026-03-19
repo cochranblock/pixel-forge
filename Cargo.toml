@@ -13,6 +13,7 @@ path = "src/main.rs"
 [features]
 default = ["metal"]
 metal = ["candle-core/metal", "candle-nn/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
 # accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
 
 [dependencies]
