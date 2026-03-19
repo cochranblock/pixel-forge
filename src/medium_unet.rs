@@ -260,18 +260,16 @@ impl MediumUNet {
         })
     }
 
-    /// Forward pass.
-    pub fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> Result<Tensor> {
+    /// Encode: input → bottleneck features + skip connections + time embedding.
+    pub fn encode(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> Result<(Tensor, Vec<Tensor>, Tensor)> {
         let device = x.device();
 
-        // Time + class embedding
         let t_emb = timestep_embedding(timestep, TIME_DIM, device)?;
         let t_emb = candle_nn::ops::silu(&self.time_mlp1.forward(&t_emb)?)?;
         let t_emb = self.time_mlp2.forward(&t_emb)?;
         let c_emb = self.class_emb.forward(class_id)?;
         let t_emb = (t_emb + c_emb)?;
 
-        // Encoder
         let mut h = self.conv_in.forward(x)?;
         let mut skips = Vec::new();
         for (i, (r1, r2, r3)) in self.down_blocks.iter().enumerate() {
@@ -284,12 +282,16 @@ impl MediumUNet {
             }
         }
 
-        // Bottleneck with self-attention
         h = self.mid_block1.forward(&h, &t_emb)?;
         h = self.mid_attn.forward(&h)?;
         h = self.mid_block2.forward(&h, &t_emb)?;
 
-        // Decoder
+        Ok((h, skips, t_emb))
+    }
+
+    /// Decode: bottleneck features + skip connections → output.
+    pub fn decode(&self, h: &Tensor, skips: &[Tensor], t_emb: &Tensor) -> Result<Tensor> {
+        let mut h = h.clone();
         for (i, (r1, r2, r3)) in self.up_blocks.iter().enumerate() {
             let skip = &skips[skips.len() - 1 - i];
             if i > 0 {
@@ -301,10 +303,15 @@ impl MediumUNet {
             h = r3.forward(&h, &t_emb)?;
         }
 
-        // Output
         let h = self.gn_out.forward(&h)?;
         let h = candle_nn::ops::silu(&h)?;
         self.conv_out.forward(&h)
+    }
+
+    /// Forward pass (encode → decode, no expert intervention).
+    pub fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> Result<Tensor> {
+        let (h, skips, t_emb) = self.encode(x, timestep, class_id)?;
+        self.decode(&h, &skips, &t_emb)
     }
 
     pub fn param_count(varmap: &VarMap) -> usize {
