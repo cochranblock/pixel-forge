@@ -53,16 +53,15 @@ struct PackedDataset {
     stride: usize,
 }
 
-const CACHE_FILE: &str = "data/dataset.bin.zst";
-
 /// Preprocess: decode all PNGs → RAM → bincode+zstd file.
 /// Called once. Subsequent runs load the cached blob.
 pub fn preprocess(data_dir: &str, img_size: u32) -> Result<PackedDataset> {
-    let cache_path = Path::new(CACHE_FILE);
+    let cache_file = format!("{}/dataset.bin.zst", data_dir);
+    let cache_path = Path::new(&cache_file);
 
     // Try loading cached blob first
     if cache_path.exists() {
-        println!("loading cached dataset from {CACHE_FILE}...");
+        println!("loading cached dataset from {cache_file}...");
         let t0 = std::time::Instant::now();
         let compressed = std::fs::read(cache_path)?;
         let decompressed = zstd::decode_all(compressed.as_slice())?;
@@ -74,7 +73,7 @@ pub fn preprocess(data_dir: &str, img_size: u32) -> Result<PackedDataset> {
         return Ok(dataset);
     }
 
-    println!("preprocessing PNGs from {data_dir} → {CACHE_FILE}...");
+    println!("preprocessing PNGs from {data_dir} → {cache_file}...");
     let t0 = std::time::Instant::now();
 
     let class_names = [
@@ -165,41 +164,53 @@ fn decode_png(path: &Path, img_size: u32) -> Option<Vec<f32>> {
     Some(px)
 }
 
-/// Palette swap augmentation — dedupe colors, shuffle mapping, search-and-replace.
-fn palette_swap(px: &mut [f32], stride: usize, img_size: u32) {
+/// Palette swap augmentation — dedupe colors, shuffle mapping, hash-based replace.
+fn palette_swap(px: &mut [f32], _stride: usize, img_size: u32) {
+    use std::collections::HashMap;
     let n = (img_size * img_size) as usize;
     let mut rng = rand::thread_rng();
 
-    // Dedupe: collect unique quantized RGB triples
-    let mut colors: Vec<[u8; 3]> = Vec::with_capacity(64);
+    // Pass 1: dedupe into a vec (order matters for shuffle mapping)
+    let mut colors: Vec<u32> = Vec::with_capacity(64);
+    let mut seen: HashMap<u32, usize> = HashMap::with_capacity(64);
     for i in 0..n {
-        let c = [
-            (px[i] * 255.0) as u8,
-            (px[n + i] * 255.0) as u8,
-            (px[2 * n + i] * 255.0) as u8,
-        ];
-        if !colors.contains(&c) {
-            colors.push(c);
-            if colors.len() >= 64 { break; } // pixel art ≤64 colors
+        let r = (px[i] * 255.0) as u8;
+        let g = (px[n + i] * 255.0) as u8;
+        let b = (px[2 * n + i] * 255.0) as u8;
+        let key = (r as u32) << 16 | (g as u32) << 8 | b as u32;
+        if !seen.contains_key(&key) {
+            seen.insert(key, colors.len());
+            colors.push(key);
+            if colors.len() >= 64 { break; }
         }
     }
     if colors.len() < 2 { return; }
 
-    // Shuffle → search-and-replace by index
+    // Shuffle to create mapping
     let mut shuffled = colors.clone();
     shuffled.shuffle(&mut rng);
 
+    // Build lookup: old_key → new_rgb
+    let mut swap: HashMap<u32, (f32, f32, f32)> = HashMap::with_capacity(colors.len());
+    for (i, &old_key) in colors.iter().enumerate() {
+        let nc = shuffled[i];
+        swap.insert(old_key, (
+            ((nc >> 16) & 0xFF) as f32 / 255.0,
+            ((nc >> 8) & 0xFF) as f32 / 255.0,
+            (nc & 0xFF) as f32 / 255.0,
+        ));
+    }
+
+    // Pass 2: replace via hash lookup — O(1) per pixel
     for i in 0..n {
-        let c = [
-            (px[i] * 255.0) as u8,
-            (px[n + i] * 255.0) as u8,
-            (px[2 * n + i] * 255.0) as u8,
-        ];
-        if let Some(idx) = colors.iter().position(|x| *x == c) {
-            let nc = shuffled[idx];
-            px[i] = nc[0] as f32 / 255.0;
-            px[n + i] = nc[1] as f32 / 255.0;
-            px[2 * n + i] = nc[2] as f32 / 255.0;
+        let r = (px[i] * 255.0) as u8;
+        let g = (px[n + i] * 255.0) as u8;
+        let b = (px[2 * n + i] * 255.0) as u8;
+        let key = (r as u32) << 16 | (g as u32) << 8 | b as u32;
+        if let Some(&(nr, ng, nb)) = swap.get(&key) {
+            px[i] = nr;
+            px[n + i] = ng;
+            px[2 * n + i] = nb;
         }
     }
 }
