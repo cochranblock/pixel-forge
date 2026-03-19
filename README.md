@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/pixel-forge-logo.jpg" alt="Pixel Forge" width="400">
+</p>
+
 # Pixel Forge
 
 **Free pixel art generator. Train your own model. Embed it in your app. Pure Rust.**
