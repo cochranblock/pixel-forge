@@ -123,10 +123,10 @@ impl SelfAttention {
         let v = qkv.narrow(2, self.channels * 2, self.channels)?.contiguous()?;
 
         // Scaled dot-product attention
-        let scale = (self.channels as f64).sqrt();
+        let scale = (self.channels as f32).sqrt();
         let k_t = k.transpose(1, 2)?.contiguous()?;
         let attn = q.matmul(&k_t)?.broadcast_div(
-            &Tensor::new(scale, x.device())?.to_dtype(x.dtype())?
+            &Tensor::new(scale, x.device())?
         )?;
         let attn = nn::ops::softmax(&attn, 2)?;
         let out = attn.matmul(&v)?; // (B, HW, C)

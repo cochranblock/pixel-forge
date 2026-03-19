@@ -432,3 +432,56 @@ pub fn sample(
 
     Ok(images)
 }
+
+/// Sample from a trained MediumUNet (Quench) model.
+pub fn sample_medium(
+    model_path: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+) -> Result<Vec<RgbaImage>> {
+    let device = crate::pipeline::best_device();
+    let dtype = DType::F32;
+
+    println!("loading Quench model from {model_path}...");
+    let mut varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
+    let model = MediumUNet::new(vb)?;
+    varmap.load(model_path)?;
+
+    let params = MediumUNet::param_count(&varmap);
+    println!("model: Quench, {} params, sampling {} images, {steps} steps", params, count);
+
+    let mut images = Vec::new();
+    let class_tensor = Tensor::new(&[class_id], &device)?;
+
+    for i in 0..count {
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+
+        for step in 0..steps {
+            let noise_level = 1.0 - (step as f32 / steps as f32);
+            let t = Tensor::new(&[noise_level], &device)?;
+            let pred = model.forward(&x, &t, &class_tensor)?;
+            let mix = 1.0 / (steps - step) as f64;
+            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+        }
+
+        let x = x.clamp(0.0, 1.0)?;
+        let x = (x * 255.0)?.to_dtype(DType::U8)?;
+        let x = x.squeeze(0)?.permute((1, 2, 0))?;
+        let pixels = x.flatten_all()?.to_vec1::<u8>()?;
+
+        let mut rgba = RgbaImage::new(img_size, img_size);
+        for y in 0..img_size {
+            for px in 0..img_size {
+                let idx = (y * img_size + px) as usize * 3;
+                rgba.put_pixel(px, y, image::Rgba([pixels[idx], pixels[idx + 1], pixels[idx + 2], 255]));
+            }
+        }
+        images.push(rgba);
+        println!("  sample {}/{count}", i + 1);
+    }
+
+    Ok(images)
+}

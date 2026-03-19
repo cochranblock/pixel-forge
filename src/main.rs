@@ -103,7 +103,7 @@ enum Cmd {
         #[arg(long, default_value_t = 16)]
         size: u32,
     },
-    /// Generate pixel art using a trained tiny model (no SD required).
+    /// Generate pixel art using a trained model (no SD required).
     Generate {
         /// Class to generate: character, weapon, potion, terrain, enemy, etc.
         class: String,
@@ -125,6 +125,9 @@ enum Cmd {
         /// Output file path.
         #[arg(short, long, default_value = "generated.png")]
         output: String,
+        /// Use MediumUNet (Quench) model architecture.
+        #[arg(long)]
+        medium: bool,
     },
     /// Record a swipe (good/bad) on a generated sprite for Judge training.
     Swipe {
@@ -327,6 +330,7 @@ fn main() -> anyhow::Result<()> {
             steps,
             palette: palette_name,
             output,
+            medium,
         } => {
             let class_names = [
                 "character", "weapon", "potion", "terrain", "enemy",
@@ -340,7 +344,11 @@ fn main() -> anyhow::Result<()> {
             println!("generating {count}x {size}x{size} class={class} (id={class_id})");
 
             let pal = palette::load_palette(&palette_name)?;
-            let raw_images = train::sample(&model, class_id, size, count, steps)?;
+            let raw_images = if medium {
+                train::sample_medium(&model, class_id, size, count, steps)?
+            } else {
+                train::sample(&model, class_id, size, count, steps)?
+            };
 
             let processed: Vec<image::RgbaImage> = raw_images
                 .into_iter()
