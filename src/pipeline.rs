@@ -22,7 +22,7 @@ const NUM_STEPS: usize = 4;
 const GUIDANCE_SCALE: f64 = 9.0;
 
 /// Auto-detect best device: Metal GPU on Apple Silicon, CPU fallback.
-fn best_device() -> candle_core::Device {
+pub fn best_device() -> candle_core::Device {
     #[cfg(feature = "cuda")]
     {
         if candle_core::utils::cuda_is_available() {

@@ -3,6 +3,9 @@
 //! Palette management — color quantization for pixel art.
 //! Enforces limited palettes: Stardew Valley warmth, Starbound richness,
 //! retro hardware limits (NES, SNES, Game Boy).
+//!
+//! Stardew palette: inspired by ConcernedApe (Eric Barone)'s Stardew Valley.
+//! One dev, one game, one legend. No assets copied — colors hand-picked to honor the vibe.
 
 use image::{Rgba, RgbaImage};
 use std::path::Path;

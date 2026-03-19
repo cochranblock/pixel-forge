@@ -1,0 +1,38 @@
+# Attribution
+
+## Pixel Forge Tiny UNet
+
+The tiny diffusion model architecture and training approach were inspired by:
+
+### PixelGen16x16
+- **Author:** Anouar Khaldi (kld-anouar)
+- **License:** MIT + CC BY 4.0
+- **Repository:** https://github.com/kld-anouar/PixelGen16x16
+- **What we used:** The concept of applying a small UNet2D diffusion model to 16x16 pixel art generation. All code was rewritten from scratch in Rust/Candle — no Python code was copied.
+- **Acknowledgment:** PixelGen16x16 credits the "Diffusion Models Class by Hugging Face" for resources and inspiration.
+
+### pixartdiffusion
+- **Author:** Zak Buzzard (zzbuzzard)
+- **License:** No explicit license in repository
+- **Repository:** https://github.com/zzbuzzard/pixartdiffusion
+- **What we used:** Reference for 32x32 pixel art diffusion model training patterns and iterative denoising sampling approach. No code was copied.
+
+### PixDiff-PIG (Research Reference)
+- **Authors:** (see paper)
+- **Paper:** "PixDiff-PIG: Palette-Informed Diffusion for Pixel Art Generation" (December 2025)
+- **What we used:** The concept of palette-aware diffusion for pixel art — validating that small UNet architectures produce high-quality pixel art when combined with palette constraints.
+
+### Stardew Valley (Palette Inspiration)
+- **Creator:** Eric "ConcernedApe" Barone
+- **What we used:** The "stardew" built-in palette is inspired by the warm earth-tone color palette of Stardew Valley. No assets from the game were used — the palette colors were hand-selected to evoke a similar visual feel.
+- **Acknowledgment:** Stardew Valley set the standard for modern pixel art in indie games. ConcernedApe built the entire game solo — art, music, code, writing — and proved one person can ship something extraordinary.
+
+### Starbound (Palette Inspiration)
+- **Developer:** Chucklefish
+- **What we used:** The "starbound" built-in palette is inspired by Starbound's vibrant sci-fi color palette. No game assets were used.
+
+### Candle ML Framework
+- **Author:** Hugging Face
+- **License:** MIT / Apache 2.0
+- **Repository:** https://github.com/huggingface/candle
+- **What we used:** ML inference and training framework for Rust. The backbone of all model operations.

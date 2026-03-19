@@ -7,6 +7,8 @@ mod palette;
 mod grid;
 mod sheet;
 mod pipeline;
+mod tiny_unet;
+mod train;
 
 use clap::{Parser, Subcommand};
 
@@ -57,6 +59,51 @@ enum Cmd {
     Palettes,
     /// Download/cache the diffusion model.
     Setup,
+    /// Train a tiny pixel art diffusion model from a dataset of PNGs.
+    /// Dataset: directory of PNGs, optionally organized by class subdirectory.
+    Train {
+        /// Path to training data directory (PNGs, optionally in class subdirs).
+        #[arg(short, long, default_value = "data")]
+        data: String,
+        /// Output model file path (.safetensors).
+        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        output: String,
+        /// Number of training epochs.
+        #[arg(short, long, default_value_t = 100)]
+        epochs: usize,
+        /// Batch size.
+        #[arg(short, long, default_value_t = 64)]
+        batch_size: usize,
+        /// Learning rate.
+        #[arg(short, long, default_value_t = 1e-3)]
+        lr: f64,
+        /// Image size (square). Must match training data.
+        #[arg(long, default_value_t = 16)]
+        img_size: u32,
+    },
+    /// Generate pixel art using a trained tiny model (no SD required).
+    Generate {
+        /// Class to generate: character, weapon, potion, terrain, enemy, etc.
+        class: String,
+        /// Path to trained model (.safetensors).
+        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        model: String,
+        /// Output size in pixels (must match training size).
+        #[arg(short, long, default_value_t = 16)]
+        size: u32,
+        /// Number of images to generate.
+        #[arg(short, long, default_value_t = 1)]
+        count: u32,
+        /// Denoising steps (more = higher quality, slower).
+        #[arg(long, default_value_t = 40)]
+        steps: usize,
+        /// Palette for color quantization.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output file path.
+        #[arg(short, long, default_value = "generated.png")]
+        output: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -121,6 +168,63 @@ fn main() -> anyhow::Result<()> {
         Cmd::Setup => {
             pipeline::download_model()?;
             println!("model cached and ready");
+        }
+        Cmd::Train {
+            data,
+            output,
+            epochs,
+            batch_size,
+            lr,
+            img_size,
+        } => {
+            let config = train::TrainConfig {
+                data_dir: data,
+                output,
+                epochs,
+                batch_size,
+                lr,
+                img_size,
+            };
+            train::train(&config)?;
+        }
+        Cmd::Generate {
+            class,
+            model,
+            size,
+            count,
+            steps,
+            palette: palette_name,
+            output,
+        } => {
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let class_id = class_names.iter()
+                .position(|&n| n == class.to_lowercase())
+                .unwrap_or(14) as u32; // default to misc
+
+            println!("generating {count}x {size}x{size} class={class} (id={class_id})");
+
+            let pal = palette::load_palette(&palette_name)?;
+            let raw_images = train::sample(&model, class_id, size, count, steps)?;
+
+            let processed: Vec<image::RgbaImage> = raw_images
+                .into_iter()
+                .map(|img| {
+                    let snapped = grid::snap_to_grid(&img, size);
+                    palette::quantize(&snapped, &pal)
+                })
+                .collect();
+
+            if count == 1 {
+                processed[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&processed, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {output}");
         }
     }
 
