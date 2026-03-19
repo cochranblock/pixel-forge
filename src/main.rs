@@ -73,7 +73,7 @@ enum Cmd {
         #[arg(short, long, default_value = "data")]
         data: String,
         /// Output model file path (.safetensors).
-        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        #[arg(short, long, default_value = "pixel-forge-cinder.safetensors")]
         output: String,
         /// Number of training epochs.
         #[arg(short, long, default_value_t = 100)]
@@ -108,7 +108,7 @@ enum Cmd {
         /// Class to generate: character, weapon, potion, terrain, enemy, etc.
         class: String,
         /// Path to trained model (.safetensors).
-        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        #[arg(short, long, default_value = "pixel-forge-cinder.safetensors")]
         model: String,
         /// Output size in pixels (must match training size).
         #[arg(short, long, default_value_t = 16)]
@@ -192,7 +192,7 @@ enum Cmd {
     /// Update Generator LoRA from Judge feedback.
     TrainLora {
         /// Path to base Generator model.
-        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        #[arg(short, long, default_value = "pixel-forge-cinder.safetensors")]
         model: String,
         /// Path to trained Judge model.
         #[arg(short, long, default_value = "judge.safetensors")]
@@ -213,7 +213,7 @@ enum Cmd {
     /// Full pipeline: generate → judge → combine → render scene.
     Pipeline {
         /// Path to Generator model.
-        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        #[arg(short, long, default_value = "pixel-forge-cinder.safetensors")]
         model: String,
         /// Path to Judge model (skip judging if missing).
         #[arg(short, long, default_value = "judge.safetensors")]

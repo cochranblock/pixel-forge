@@ -34,7 +34,7 @@ impl Default for TrainConfig {
     fn default() -> Self {
         Self {
             data_dir: "data".into(),
-            output: "pixel-forge-tiny.safetensors".into(),
+            output: "pixel-forge-cinder.safetensors".into(),
             epochs: 100,
             batch_size: 64,
             lr: 1e-3,
@@ -367,12 +367,12 @@ pub fn train(config: &TrainConfig) -> Result<()> {
     if config.medium {
         let model = MediumUNet::new(vb)?;
         let params = MediumUNet::param_count(&varmap);
-        println!("model: MediumUNet, {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        println!("model: Quench (MediumUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         train_inner(&model, &varmap, config, &dataset, &device)?;
     } else {
         let model = TinyUNet::new(vb)?;
         let params = TinyUNet::param_count(&varmap);
-        println!("model: TinyUNet, {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        println!("model: Cinder (TinyUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         train_inner(&model, &varmap, config, &dataset, &device)?;
     }
 
