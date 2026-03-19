@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::tiny_unet::TinyUNet;
+use crate::medium_unet::MediumUNet;
 
 /// Training config.
 pub struct TrainConfig {
@@ -26,6 +27,7 @@ pub struct TrainConfig {
     pub batch_size: usize,
     pub lr: f64,
     pub img_size: u32,
+    pub medium: bool,
 }
 
 impl Default for TrainConfig {
@@ -37,7 +39,25 @@ impl Default for TrainConfig {
             batch_size: 64,
             lr: 1e-3,
             img_size: 16,
+            medium: false,
         }
+    }
+}
+
+/// Trait to unify TinyUNet and MediumUNet forward passes.
+pub trait DiffusionModel {
+    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor>;
+}
+
+impl DiffusionModel for TinyUNet {
+    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor> {
+        TinyUNet::forward(self, x, timestep, class_id)
+    }
+}
+
+impl DiffusionModel for MediumUNet {
+    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor> {
+        MediumUNet::forward(self, x, timestep, class_id)
     }
 }
 
@@ -236,22 +256,16 @@ fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<
     (x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?)
 }
 
-/// Train the tiny UNet. All data in RAM — zero disk I/O during training.
-pub fn train(config: &TrainConfig) -> Result<()> {
-    let device = crate::pipeline::best_device();
-    let dtype = DType::F32;
-
-    // Load or preprocess dataset — one-shot into RAM
-    let dataset = preprocess(&config.data_dir, config.img_size)?;
+/// Train loop — works with any DiffusionModel (Tiny or Medium).
+fn train_inner(
+    model: &dyn DiffusionModel,
+    varmap: &VarMap,
+    config: &TrainConfig,
+    dataset: &PackedDataset,
+    device: &Device,
+) -> Result<()> {
     let n = dataset.labels.len();
     let stride = dataset.stride;
-
-    // Build model
-    let varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
-    let model = TinyUNet::new(vb)?;
-    let params = TinyUNet::param_count(&varmap);
-    println!("model: {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
 
     let mut opt = nn::AdamW::new(varmap.all_vars(), nn::ParamsAdamW {
         lr: config.lr,
@@ -268,7 +282,6 @@ pub fn train(config: &TrainConfig) -> Result<()> {
     for epoch in 0..config.epochs {
         let epoch_start = std::time::Instant::now();
 
-        // Shuffle indices
         let mut indices: Vec<usize> = (0..n).collect();
         indices.shuffle(&mut rand::thread_rng());
 
@@ -282,7 +295,6 @@ pub fn train(config: &TrainConfig) -> Result<()> {
             let end = (start + config.batch_size).min(n);
             let bs = end - start;
 
-            // Build batch from RAM — copy + augment
             let mut batch_px = Vec::with_capacity(bs * stride);
             let mut batch_labels = Vec::with_capacity(bs);
 
@@ -290,7 +302,6 @@ pub fn train(config: &TrainConfig) -> Result<()> {
                 let src_start = idx * stride;
                 let mut sample = dataset.pixels[src_start..src_start + stride].to_vec();
 
-                // Augment in-place on the copy
                 if rng.r#gen_bool(0.5) {
                     palette_swap(&mut sample, stride, config.img_size);
                 }
@@ -302,13 +313,12 @@ pub fn train(config: &TrainConfig) -> Result<()> {
                 batch_labels.push(dataset.labels[idx]);
             }
 
-            // To GPU
-            let x_batch = Tensor::new(batch_px.as_slice(), &device)?
+            let x_batch = Tensor::new(batch_px.as_slice(), device)?
                 .reshape((bs, 3, sz, sz))?;
-            let y_batch = Tensor::new(batch_labels.as_slice(), &device)?;
+            let y_batch = Tensor::new(batch_labels.as_slice(), device)?;
 
-            let noise_amount = Tensor::rand(0f32, 1f32, (bs,), &device)?;
-            let noisy_x = corrupt(&x_batch, &noise_amount, &device)?;
+            let noise_amount = Tensor::rand(0f32, 1f32, (bs,), device)?;
+            let noisy_x = corrupt(&x_batch, &noise_amount, device)?;
 
             let pred = model.forward(&noisy_x, &noise_amount, &y_batch)?;
             let loss = (&pred - &x_batch)?.sqr()?.mean_all()?;
@@ -326,7 +336,6 @@ pub fn train(config: &TrainConfig) -> Result<()> {
             println!("  epoch {}/{}: loss={:.6} ({:.1}s)", epoch + 1, config.epochs, avg_loss, elapsed);
         }
 
-        // Checkpoint every 25 epochs
         if (epoch + 1) % 25 == 0 {
             let cp = format!("{}.epoch{}", config.output, epoch + 1);
             varmap.save(&cp)?;
@@ -345,7 +354,32 @@ pub fn train(config: &TrainConfig) -> Result<()> {
     Ok(())
 }
 
-/// Sample from a trained model.
+/// Train — dispatches to Tiny or Medium based on config.
+pub fn train(config: &TrainConfig) -> Result<()> {
+    let device = crate::pipeline::best_device();
+    let dtype = DType::F32;
+
+    let dataset = preprocess(&config.data_dir, config.img_size)?;
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
+
+    if config.medium {
+        let model = MediumUNet::new(vb)?;
+        let params = MediumUNet::param_count(&varmap);
+        println!("model: MediumUNet, {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        train_inner(&model, &varmap, config, &dataset, &device)?;
+    } else {
+        let model = TinyUNet::new(vb)?;
+        let params = TinyUNet::param_count(&varmap);
+        println!("model: TinyUNet, {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        train_inner(&model, &varmap, config, &dataset, &device)?;
+    }
+
+    Ok(())
+}
+
+/// Sample from a trained model (auto-detects size by param count).
 pub fn sample(
     model_path: &str,
     class_id: u32,
@@ -356,6 +390,7 @@ pub fn sample(
     let device = crate::pipeline::best_device();
     let dtype = DType::F32;
 
+    // Try loading as TinyUNet first, then MediumUNet
     println!("loading model from {model_path}...");
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);

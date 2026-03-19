@@ -15,6 +15,7 @@ mod swipe_store;
 mod scene;
 mod combiner;
 mod lora;
+mod medium_unet;
 
 use clap::{Parser, Subcommand};
 
@@ -86,6 +87,9 @@ enum Cmd {
         /// Image size (square). Must match training data.
         #[arg(long, default_value_t = 16)]
         img_size: u32,
+        /// Use MediumUNet (~4.2M params) instead of TinyUNet (~1.1M params).
+        #[arg(long)]
+        medium: bool,
     },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
@@ -302,6 +306,7 @@ fn main() -> anyhow::Result<()> {
             batch_size,
             lr,
             img_size,
+            medium,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -310,6 +315,7 @@ fn main() -> anyhow::Result<()> {
                 batch_size,
                 lr,
                 img_size,
+                medium,
             };
             train::train(&config)?;
         }

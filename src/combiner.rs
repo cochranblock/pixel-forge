@@ -66,16 +66,17 @@ impl MultiHeadAttention {
         let k = k.reshape((b, t, N_HEADS, D_HEAD))?.permute((0, 2, 1, 3))?;
         let v = v.reshape((b, t, N_HEADS, D_HEAD))?.permute((0, 2, 1, 3))?;
 
-        // Scaled dot-product attention
+        // Scaled dot-product attention (contiguous for CUDA matmul)
         let scale = (D_HEAD as f64).sqrt();
-        let scores = q.matmul(&k.transpose(2, 3)?)?.broadcast_div(
+        let k_t = k.transpose(2, 3)?.contiguous()?;
+        let scores = q.contiguous()?.matmul(&k_t)?.broadcast_div(
             &Tensor::new(scale, x.device())?.to_dtype(x.dtype())?
         )?; // (B, N_HEADS, T, T)
         let attn = nn::ops::softmax(&scores, 3)?; // (B, N_HEADS, T, T)
-        let out = attn.matmul(&v)?; // (B, N_HEADS, T, D_HEAD)
+        let out = attn.matmul(&v.contiguous()?)?; // (B, N_HEADS, T, D_HEAD)
 
         // Reshape back to (B, T, D_MODEL)
-        let out = out.permute((0, 2, 1, 3))?.reshape((b, t, D_MODEL))?;
+        let out = out.permute((0, 2, 1, 3))?.contiguous()?.reshape((b, t, D_MODEL))?;
         self.wo.forward(&out)
     }
 }
