@@ -16,6 +16,8 @@ mod scene;
 mod combiner;
 mod lora;
 mod medium_unet;
+mod expert;
+mod moe;
 
 use clap::{Parser, Subcommand};
 
@@ -232,6 +234,35 @@ enum Cmd {
         palette: String,
         /// Output scene image path.
         #[arg(short, long, default_value = "scene.png")]
+        output: String,
+    },
+    /// MoE cascade: Cinder drafts → Quench + Experts refines.
+    Cascade {
+        /// Class to generate.
+        class: String,
+        /// Cinder model path.
+        #[arg(long, default_value = "pixel-forge-cinder.safetensors")]
+        cinder: String,
+        /// Quench model path.
+        #[arg(long, default_value = "pixel-forge-quench.safetensors")]
+        quench: String,
+        /// Expert weights path (optional).
+        #[arg(long, default_value = "experts.safetensors")]
+        experts: String,
+        /// Number of images.
+        #[arg(short, long, default_value_t = 1)]
+        count: u32,
+        /// Cinder draft steps.
+        #[arg(long, default_value_t = 10)]
+        cinder_steps: usize,
+        /// Quench refine steps.
+        #[arg(long, default_value_t = 30)]
+        quench_steps: usize,
+        /// Palette.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output file.
+        #[arg(short, long, default_value = "cascade.png")]
         output: String,
     },
 }
@@ -659,6 +690,46 @@ fn main() -> anyhow::Result<()> {
             scene_img.save(&output)?;
             println!("saved scene: {} ({}×{} px, {} sprites placed)",
                 output, scene::SCENE_PX, scene::SCENE_PX, grid.sprite_count());
+        }
+        Cmd::Cascade { class, cinder, quench, experts, count, cinder_steps, quench_steps, palette: palette_name, output } => {
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let class_id = class_names.iter()
+                .position(|&n| n == class.to_lowercase())
+                .unwrap_or(14) as u32;
+
+            let pal = palette::load_palette(&palette_name)?;
+            let experts_path = if std::path::Path::new(&experts).exists() {
+                Some(experts.as_str())
+            } else {
+                None
+            };
+
+            let config = moe::CascadeConfig {
+                cinder_steps,
+                quench_steps,
+            };
+
+            let raw_images = moe::cascade_sample(&cinder, &quench, experts_path, class_id, 16, count, &config)?;
+
+            let processed: Vec<image::RgbaImage> = raw_images
+                .into_iter()
+                .map(|img| {
+                    let snapped = grid::snap_to_grid(&img, 16);
+                    palette::quantize(&snapped, &pal)
+                })
+                .collect();
+
+            if count == 1 {
+                processed[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&processed, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {output}");
         }
     }
 
