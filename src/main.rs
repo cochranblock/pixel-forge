@@ -10,6 +10,11 @@ mod pipeline;
 mod tiny_unet;
 mod train;
 mod curate;
+mod judge;
+mod swipe_store;
+mod scene;
+mod combiner;
+mod lora;
 
 use clap::{Parser, Subcommand};
 
@@ -115,6 +120,111 @@ enum Cmd {
         palette: String,
         /// Output file path.
         #[arg(short, long, default_value = "generated.png")]
+        output: String,
+    },
+    /// Record a swipe (good/bad) on a generated sprite for Judge training.
+    Swipe {
+        /// Path to the sprite image (16×16 PNG).
+        image: String,
+        /// "good" or "bad" (swipe right or left).
+        verdict: String,
+        /// Class of the sprite.
+        #[arg(short, long, default_value = "misc")]
+        class: String,
+        /// Path to swipe store file.
+        #[arg(long, default_value = "swipes.bin")]
+        store: String,
+    },
+    /// Train the Judge model from recorded swipes.
+    TrainJudge {
+        /// Path to swipe store file.
+        #[arg(short, long, default_value = "swipes.bin")]
+        store: String,
+        /// Output Judge model path.
+        #[arg(short, long, default_value = "judge.safetensors")]
+        output: String,
+    },
+    /// Score sprites through a trained Judge — filter good from bad.
+    Judge {
+        /// Path to sprite images (or directory of PNGs).
+        input: String,
+        /// Path to trained Judge model.
+        #[arg(short, long, default_value = "judge.safetensors")]
+        model: String,
+    },
+    /// Generate a scene: 8×8 grid of sprites (128×128 composite).
+    Scene {
+        /// Generation mode: "bootstrap" (rule-seeded), "model" (trained Combiner), "seed" (user-seeded).
+        #[arg(short, long, default_value = "bootstrap")]
+        mode: String,
+        /// Path to Combiner model (for mode=model).
+        #[arg(short = 'M', long, default_value = "combiner.safetensors")]
+        combiner_model: String,
+        /// Biome for bootstrap: forest, dungeon, village, cave, plains.
+        #[arg(short, long, default_value = "forest")]
+        biome: String,
+        /// Sampling temperature (lower = more deterministic).
+        #[arg(short, long, default_value_t = 0.8)]
+        temperature: f32,
+        /// Number of scenes to generate.
+        #[arg(short, long, default_value_t = 1)]
+        count: u32,
+        /// Output file path.
+        #[arg(short, long, default_value = "scene.png")]
+        output: String,
+    },
+    /// Train the Combiner model on rule-seeded or user-accepted scenes.
+    TrainCombiner {
+        /// Number of bootstrap scenes to generate for training.
+        #[arg(short, long, default_value_t = 500)]
+        num_scenes: usize,
+        /// Training epochs.
+        #[arg(short, long, default_value_t = 20)]
+        epochs: usize,
+        /// Output model path.
+        #[arg(short, long, default_value = "combiner.safetensors")]
+        output: String,
+    },
+    /// Update Generator LoRA from Judge feedback.
+    TrainLora {
+        /// Path to base Generator model.
+        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        model: String,
+        /// Path to trained Judge model.
+        #[arg(short, long, default_value = "judge.safetensors")]
+        judge: String,
+        /// Output LoRA weights path.
+        #[arg(short, long, default_value = "generator-lora.safetensors")]
+        output: String,
+        /// Class to generate during LoRA training.
+        #[arg(short, long, default_value = "character")]
+        class: String,
+    },
+    /// Show swipe store stats.
+    SwipeStats {
+        /// Path to swipe store file.
+        #[arg(short, long, default_value = "swipes.bin")]
+        store: String,
+    },
+    /// Full pipeline: generate → judge → combine → render scene.
+    Pipeline {
+        /// Path to Generator model.
+        #[arg(short, long, default_value = "pixel-forge-tiny.safetensors")]
+        model: String,
+        /// Path to Judge model (skip judging if missing).
+        #[arg(short, long, default_value = "judge.safetensors")]
+        judge: String,
+        /// Path to Combiner model (use bootstrap if missing).
+        #[arg(short = 'M', long, default_value = "combiner.safetensors")]
+        combiner: String,
+        /// Path to LoRA weights (skip if missing).
+        #[arg(short, long, default_value = "generator-lora.safetensors")]
+        lora: String,
+        /// Palette for color quantization.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output scene image path.
+        #[arg(short, long, default_value = "scene.png")]
         output: String,
     },
 }
@@ -241,6 +351,300 @@ fn main() -> anyhow::Result<()> {
                 sheet_img.save(&output)?;
             }
             println!("saved: {output}");
+        }
+        Cmd::Swipe { image, verdict, class, store } => {
+            let good = match verdict.to_lowercase().as_str() {
+                "good" | "right" | "yes" | "y" | "1" => true,
+                "bad" | "left" | "no" | "n" | "0" => false,
+                _ => anyhow::bail!("verdict must be 'good' or 'bad', got '{verdict}'"),
+            };
+
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let class_id = class_names.iter()
+                .position(|&n| n == class.to_lowercase())
+                .unwrap_or(14) as u32;
+
+            // Load sprite pixels (channel-first f32)
+            let img = image::open(&image)?.to_rgb8();
+            let img = image::imageops::resize(&img, 16, 16, image::imageops::FilterType::Nearest);
+            let n = 256usize; // 16*16
+            let mut pixels = vec![0.0f32; 768];
+            for y in 0..16u32 {
+                for x in 0..16u32 {
+                    let p = img.get_pixel(x, y);
+                    let idx = (y * 16 + x) as usize;
+                    pixels[idx] = p[0] as f32 / 255.0;
+                    pixels[n + idx] = p[1] as f32 / 255.0;
+                    pixels[2 * n + idx] = p[2] as f32 / 255.0;
+                }
+            }
+
+            let mut swipe_store = swipe_store::SwipeStore::load_or_default(&store, 200);
+            let len = swipe_store.record(pixels, good, class_id);
+            swipe_store.save(&store)?;
+
+            let verdict_str = if good { "good" } else { "bad" };
+            println!("recorded swipe: {} ({}) → {} swipes in buffer", verdict_str, class, len);
+            if swipe_store.judge_ready() {
+                println!("judge ready — run `pixel-forge train-judge` to train");
+            }
+            if swipe_store.should_retrain() {
+                println!("retrain triggered (every 5 swipes)");
+            }
+        }
+        Cmd::TrainJudge { store, output } => {
+            let device = pipeline::best_device();
+            let swipe_store = swipe_store::SwipeStore::load_or_default(&store, 200);
+
+            let (varmap, _model, result) = judge::train_judge(&swipe_store, &device)?;
+            judge::save_judge(&varmap, &output)?;
+
+            println!("{result}");
+            let file_size = std::fs::metadata(&output)?.len();
+            println!("saved: {} ({:.1} KB)", output, file_size as f64 / 1024.0);
+        }
+        Cmd::Judge { input, model } => {
+            let device = pipeline::best_device();
+            let (_varmap, judge_model) = judge::load_judge(&model, &device)?;
+
+            let path = std::path::Path::new(&input);
+            let files: Vec<std::path::PathBuf> = if path.is_dir() {
+                walkdir::WalkDir::new(path)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("png"))
+                    .map(|e| e.into_path())
+                    .collect()
+            } else {
+                vec![path.to_path_buf()]
+            };
+
+            println!("judging {} sprites...", files.len());
+            for file in &files {
+                let img = image::open(file)?.to_rgb8();
+                let img = image::imageops::resize(&img, 16, 16, image::imageops::FilterType::Nearest);
+                let n = 256usize;
+                let mut pixels = vec![0.0f32; 768];
+                for y in 0..16u32 {
+                    for x in 0..16u32 {
+                        let p = img.get_pixel(x, y);
+                        let idx = (y * 16 + x) as usize;
+                        pixels[idx] = p[0] as f32 / 255.0;
+                        pixels[n + idx] = p[1] as f32 / 255.0;
+                        pixels[2 * n + idx] = p[2] as f32 / 255.0;
+                    }
+                }
+                let score = judge_model.score_one(&pixels, &device)?;
+                let verdict = if score > 0.5 { "GOOD" } else { "BAD " };
+                println!("  {} {:.3} {}", verdict, score, file.display());
+            }
+        }
+        Cmd::Scene { mode, combiner_model, biome, temperature, count, output } => {
+            match mode.as_str() {
+                "bootstrap" => {
+                    let biome_enum = match biome.to_lowercase().as_str() {
+                        "forest" => scene::Biome::Forest,
+                        "dungeon" => scene::Biome::Dungeon,
+                        "village" => scene::Biome::Village,
+                        "cave" => scene::Biome::Cave,
+                        "plains" => scene::Biome::Plains,
+                        _ => {
+                            println!("unknown biome '{biome}', using forest");
+                            scene::Biome::Forest
+                        }
+                    };
+
+                    for i in 0..count {
+                        let grid = scene::generate_seeded(biome_enum);
+                        let img = grid.render_placeholder();
+                        let out = if count == 1 {
+                            output.clone()
+                        } else {
+                            format!("{}-{}.png", output.trim_end_matches(".png"), i + 1)
+                        };
+                        img.save(&out)?;
+                        println!("scene {}/{}: {} sprites, saved {}", i + 1, count, grid.sprite_count(), out);
+                    }
+                }
+                "model" => {
+                    let device = pipeline::best_device();
+                    let (_varmap, model) = combiner::load_combiner(&combiner_model, &device)?;
+
+                    for i in 0..count {
+                        let grid = combiner::generate_scene(&model, None, temperature, &device)?;
+                        let img = grid.render_placeholder();
+                        let out = if count == 1 {
+                            output.clone()
+                        } else {
+                            format!("{}-{}.png", output.trim_end_matches(".png"), i + 1)
+                        };
+                        img.save(&out)?;
+                        println!("scene {}/{}: {} sprites, saved {}", i + 1, count, grid.sprite_count(), out);
+                    }
+                }
+                _ => anyhow::bail!("unknown scene mode '{mode}' — use 'bootstrap' or 'model'"),
+            }
+        }
+        Cmd::TrainCombiner { num_scenes, epochs, output } => {
+            let device = pipeline::best_device();
+
+            println!("generating {} bootstrap scenes...", num_scenes);
+            let scenes = scene::generate_bootstrap(num_scenes);
+
+            let config = combiner::CombinerTrainConfig {
+                epochs,
+                batch_size: 16,
+                lr: 1e-3,
+                mask_frac_min: 0.2,
+                mask_frac_max: 0.5,
+            };
+
+            let (varmap, _model, result) = combiner::train_combiner(&scenes, &config, &device)?;
+            combiner::save_combiner(&varmap, &output)?;
+
+            println!("{result}");
+            let file_size = std::fs::metadata(&output)?.len();
+            println!("saved: {} ({:.1} KB)", output, file_size as f64 / 1024.0);
+        }
+        Cmd::TrainLora { model, judge: judge_path, output, class } => {
+            let device = pipeline::best_device();
+
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let class_id = class_names.iter()
+                .position(|&n| n == class.to_lowercase())
+                .unwrap_or(14) as u32;
+
+            // Load base Generator
+            let mut base_varmap = candle_nn::VarMap::new();
+            let base_vb = candle_nn::VarBuilder::from_varmap(&base_varmap, candle_core::DType::F32, &device);
+            let _base_model = tiny_unet::TinyUNet::new(base_vb)?;
+            base_varmap.load(&model)?;
+            println!("loaded base model: {}", model);
+
+            // Load Judge
+            let (_jvm, judge_model) = judge::load_judge(&judge_path, &device)?;
+            println!("loaded judge: {}", judge_path);
+
+            // Create or load LoRA
+            let mut lora_varmap = candle_nn::VarMap::new();
+            let lora_vb = candle_nn::VarBuilder::from_varmap(&lora_varmap, candle_core::DType::F32, &device);
+            let lora_set = lora::LoraSet::new(lora_vb)?;
+
+            if std::path::Path::new(&output).exists() {
+                lora_varmap.load(&output)?;
+                println!("loaded existing lora: {}", output);
+            }
+
+            let class_ids = vec![class_id; 8];
+            let loss = lora::train_lora_step(
+                &base_varmap, &lora_varmap, &lora_set, &judge_model, &device, 8, &class_ids,
+            )?;
+            println!("lora training: avg_loss={:.4}", loss);
+
+            lora::save_lora(&lora_varmap, &output)?;
+            let file_size = std::fs::metadata(&output)?.len();
+            println!("saved: {} ({:.1} KB)", output, file_size as f64 / 1024.0);
+        }
+        Cmd::SwipeStats { store } => {
+            let swipe_store = swipe_store::SwipeStore::load_or_default(&store, 200);
+            println!("{}", swipe_store.stats());
+            if swipe_store.judge_ready() {
+                println!("judge: ready to train");
+            } else {
+                let need = 10 - swipe_store.len().min(10);
+                println!("judge: need {} more swipes", need);
+            }
+        }
+        Cmd::Pipeline { model, judge: judge_path, combiner: combiner_path, lora: _lora_path, palette: palette_name, output } => {
+            let device = pipeline::best_device();
+            let pal = palette::load_palette(&palette_name)?;
+
+            // 1. GENERATE — produce candidates per class
+            println!("step 1: generating sprite candidates...");
+            let mut all_sprites: Vec<(u32, Vec<f32>, image::RgbaImage)> = Vec::new();
+            let classes_to_gen: Vec<u32> = vec![0, 3, 4, 5]; // character, terrain, enemy, tree
+            let count_per_class = 5u32;
+
+            for &cid in &classes_to_gen {
+                let raw_images = train::sample(&model, cid, 16, count_per_class, 40)?;
+                for img in raw_images {
+                    let snapped = grid::snap_to_grid(&img, 16);
+                    let quantized = palette::quantize(&snapped, &pal);
+
+                    // Convert to channel-first f32 for Judge
+                    let n = 256usize;
+                    let mut pixels = vec![0.0f32; 768];
+                    for y in 0..16u32 {
+                        for x in 0..16u32 {
+                            let p = quantized.get_pixel(x, y);
+                            let idx = (y * 16 + x) as usize;
+                            pixels[idx] = p[0] as f32 / 255.0;
+                            pixels[n + idx] = p[1] as f32 / 255.0;
+                            pixels[2 * n + idx] = p[2] as f32 / 255.0;
+                        }
+                    }
+                    all_sprites.push((cid, pixels, quantized));
+                }
+            }
+            println!("  generated {} sprites across {} classes",
+                all_sprites.len(), classes_to_gen.len());
+
+            // 2. JUDGE — filter if Judge model exists
+            let accepted: Vec<(u32, Vec<f32>, image::RgbaImage)>;
+            if std::path::Path::new(&judge_path).exists() {
+                println!("step 2: judging sprites...");
+                let (_jvm, judge_model) = judge::load_judge(&judge_path, &device)?;
+                accepted = all_sprites.into_iter().filter(|(_, pixels, _)| {
+                    judge_model.score_one(pixels, &device).unwrap_or(0.0) > 0.5
+                }).collect();
+                println!("  accepted {}/{} sprites", accepted.len(),
+                    classes_to_gen.len() as u32 * count_per_class);
+            } else {
+                println!("step 2: no judge model, accepting all sprites");
+                accepted = all_sprites;
+            }
+
+            if accepted.is_empty() {
+                anyhow::bail!("no sprites passed the Judge — need more swipe data or lower threshold");
+            }
+
+            // 3. COMBINE — arrange into scene
+            println!("step 3: arranging scene...");
+            let grid = if std::path::Path::new(&combiner_path).exists() {
+                let (_cvm, combiner_model) = combiner::load_combiner(&combiner_path, &device)?;
+                combiner::generate_scene(&combiner_model, None, 0.8, &device)?
+            } else {
+                println!("  no combiner model, using bootstrap layout");
+                scene::generate_seeded(scene::Biome::Forest)
+            };
+
+            // 4. RENDER — composite sprites into grid
+            println!("step 4: rendering scene...");
+            let mut rng = rand::thread_rng();
+            use rand::seq::SliceRandom;
+            let mut sprites_by_class: std::collections::HashMap<u32, Vec<&Vec<f32>>> =
+                std::collections::HashMap::new();
+            for (cid, pixels, _) in &accepted {
+                sprites_by_class.entry(*cid).or_default().push(pixels);
+            }
+
+            let scene_img = grid.render(|class_id| {
+                sprites_by_class.get(&class_id)
+                    .and_then(|sprites| sprites.choose(&mut rng))
+                    .map(|px| px.to_vec())
+            });
+
+            scene_img.save(&output)?;
+            println!("saved scene: {} ({}×{} px, {} sprites placed)",
+                output, scene::SCENE_PX, scene::SCENE_PX, grid.sprite_count());
         }
     }
 

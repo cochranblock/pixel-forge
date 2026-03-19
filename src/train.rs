@@ -291,10 +291,10 @@ pub fn train(config: &TrainConfig) -> Result<()> {
                 let mut sample = dataset.pixels[src_start..src_start + stride].to_vec();
 
                 // Augment in-place on the copy
-                if rng.gen_bool(0.5) {
+                if rng.r#gen_bool(0.5) {
                     palette_swap(&mut sample, stride, config.img_size);
                 }
-                if rng.gen_bool(0.5) {
+                if rng.r#gen_bool(0.5) {
                     hflip(&mut sample, config.img_size);
                 }
 

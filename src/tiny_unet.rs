@@ -37,9 +37,9 @@ fn timestep_embedding(timestep: &Tensor, dim: usize, device: &Device) -> Result<
 }
 
 /// ResBlock — conv → groupnorm → silu → conv + skip connection + time/class conditioning.
-struct ResBlock {
-    conv1: nn::Conv2d,
-    conv2: nn::Conv2d,
+pub(crate) struct ResBlock {
+    pub(crate) conv1: nn::Conv2d,
+    pub(crate) conv2: nn::Conv2d,
     gn1: nn::GroupNorm,
     gn2: nn::GroupNorm,
     time_proj: nn::Linear,
@@ -138,14 +138,14 @@ pub struct TinyUNet {
     time_mlp2: nn::Linear,
     // Class embedding
     class_emb: nn::Embedding,
-    // Encoder
-    down_blocks: Vec<(ResBlock, ResBlock)>,
+    // Encoder — pub(crate) for LoRA adapter access
+    pub(crate) down_blocks: Vec<(ResBlock, ResBlock)>,
     downsamples: Vec<Downsample>,
     // Bottleneck
-    mid_block1: ResBlock,
-    mid_block2: ResBlock,
+    pub(crate) mid_block1: ResBlock,
+    pub(crate) mid_block2: ResBlock,
     // Decoder (channels doubled from skip connections)
-    up_blocks: Vec<(ResBlock, ResBlock)>,
+    pub(crate) up_blocks: Vec<(ResBlock, ResBlock)>,
     upsamples: Vec<Upsample>,
     // Output projection: CHANNELS[0] → 3 RGB
     conv_out: nn::Conv2d,
