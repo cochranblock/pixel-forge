@@ -9,6 +9,7 @@ mod sheet;
 mod pipeline;
 mod tiny_unet;
 mod train;
+mod curate;
 
 use clap::{Parser, Subcommand};
 
@@ -80,6 +81,18 @@ enum Cmd {
         /// Image size (square). Must match training data.
         #[arg(long, default_value_t = 16)]
         img_size: u32,
+    },
+    /// Curate raw downloaded datasets into class-sorted training directories.
+    Curate {
+        /// Path to raw downloads directory.
+        #[arg(short, long, default_value = "data/raw")]
+        raw: String,
+        /// Path to output class directories.
+        #[arg(short, long, default_value = "data")]
+        output: String,
+        /// Target tile size (square).
+        #[arg(long, default_value_t = 16)]
+        size: u32,
     },
     /// Generate pixel art using a trained tiny model (no SD required).
     Generate {
@@ -168,6 +181,9 @@ fn main() -> anyhow::Result<()> {
         Cmd::Setup => {
             pipeline::download_model()?;
             println!("model cached and ready");
+        }
+        Cmd::Curate { raw, output, size } => {
+            curate::curate(&raw, &output, size)?;
         }
         Cmd::Train {
             data,

@@ -1,0 +1,84 @@
+# Pixel Forge Training Data — Sources & Attribution
+
+All training data is hand-pixeled by known artists. No AI-generated images.
+No copyrighted game rips. Every source is free for commercial use.
+
+## Source 1: Dungeon Crawl Stone Soup Tiles (~6,000 sprites, 32×32)
+
+- **License:** CC0 (Creative Commons Zero — public domain)
+- **Artists:** Dungeon Crawl Stone Soup art team
+- **URL:** https://opengameart.org/content/dungeon-crawl-32x32-tiles
+- **Supplemental:** https://opengameart.org/content/dungeon-crawl-32x32-tiles-supplemental
+- **Categories:** Monsters, terrain, walls, items, spells, GUI, player avatars
+- **Attribution:** Not required (CC0), but credited here out of respect.
+  "Every tile can be used freely, even in a commercial project, even WITHOUT proper attribution."
+
+## Source 2: DawnLike v1.81 (~5,000 sprites, 16×16)
+
+- **License:** CC-BY 4.0 (Creative Commons Attribution 4.0)
+- **Artist:** DragonDePlatino
+- **Palette:** DawnBringer
+- **URL:** https://opengameart.org/content/dawnlike-16x16-universal-rogue-like-tileset-v181
+- **GitHub:** https://github.com/hadean-mirrors/dawnlike
+- **Categories:** Characters, monsters, weapons, items, dungeon/outdoor terrain, 2-frame animations
+- **Attribution Required:** Credit DragonDePlatino (art) and DawnBringer (palette).
+
+## Source 3: Kenney Roguelike/RPG Pack (~1,700 sprites, 16×16)
+
+- **License:** CC0 (public domain)
+- **Artist:** Kenney (kenney.nl)
+- **URL:** https://kenney.nl/assets/roguelike-rpg-pack
+- **Categories:** Floors, walls, doors, furniture, flora, characters
+- **Attribution:** Not required (CC0). Kenney is the gold standard for free game assets.
+
+## Source 4: Kenney Pixel Platformer + Redux (~1,100 sprites)
+
+- **License:** CC0
+- **Artist:** Kenney
+- **URLs:**
+  - https://kenney.nl/assets/pixel-platformer
+  - https://kenney.nl/assets/platformer-art-pixel-redux
+- **Categories:** Characters, terrain, items, enemies
+
+## Source 5: Kenney 1-Bit Pack (~1,000 sprites, 16×16)
+
+- **License:** CC0
+- **Artist:** Kenney
+- **URL:** https://kenney-assets.itch.io/1-bit-pack
+- **Categories:** 1-bit sprites — characters, items, tools, buildings, UI
+
+## Source 6: Hyptosis Tiles & Sprites (~1,000 sprites, 32×32)
+
+- **License:** CC-BY 3.0
+- **Artist:** Hyptosis
+- **URL:** https://opengameart.org/content/lots-of-free-2d-tiles-and-sprites-by-hyptosis
+- **Organized:** https://opengameart.org/content/lots-of-hyptosis-tiles-organized
+- **Categories:** Terrain, monsters, houses, castles, caves, plants
+- **Attribution Required:** Credit Hyptosis. ("All I want is credit. Anyone can use these for anything.")
+- **Downloads:** 293,000+ total across batches.
+
+## Source 7: David E. Gervais Roguelike Tiles (~1,280 sprites, 32×32)
+
+- **License:** CC-BY 3.0
+- **Artist:** David E. Gervais
+- **URL:** https://opengameart.org/content/roguelike-tiles-large-collection
+- **Categories:** 930+ creatures, 350+ items, weapons, armor, town/dungeon tiles
+- **Attribution Required:** Credit David E. Gervais.
+
+---
+
+## License Summary
+
+| Source | License | Attribution Required |
+|--------|---------|---------------------|
+| Dungeon Crawl | CC0 | No |
+| DawnLike | CC-BY 4.0 | Yes — DragonDePlatino + DawnBringer |
+| Kenney (all) | CC0 | No |
+| Hyptosis | CC-BY 3.0 | Yes — Hyptosis |
+| Gervais | CC-BY 3.0 | Yes — David E. Gervais |
+
+## Training Use
+
+These sprites are used to train a tiny diffusion model (TinyUNet) for pixel art generation.
+The model learns pixel art patterns, not specific sprites — it generates new, original pixel art.
+All sources explicitly permit commercial use and derivative works.

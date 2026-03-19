@@ -1,0 +1,9 @@
+# Raw downloads — too large for git. Re-download with scripts/pull-datasets.sh
+raw/
+
+# Curated training images — large, regenerate from raw
+# Uncomment these if you want to track curated data:
+# character/
+# enemy/
+# weapon/
+# etc.
