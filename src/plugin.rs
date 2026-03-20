@@ -68,6 +68,34 @@ pub fn handle(input: &str) -> PluginResponse {
             "version": env!("CARGO_PKG_VERSION"),
             "description": env!("CARGO_PKG_DESCRIPTION"),
         })),
+        "capabilities" => PluginResponse::success(serde_json::json!({
+            "name": "pixel-forge",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": env!("CARGO_PKG_DESCRIPTION"),
+            "commands": ["probe", "generate", "models", "palettes", "classes"],
+            "ui": {
+                "selectors": [
+                    {
+                        "id": "class",
+                        "label": "class",
+                        "values": CLASS_NAMES,
+                        "default": "character",
+                    },
+                    {
+                        "id": "palette",
+                        "label": "palette",
+                        "values": PALETTE_NAMES,
+                        "default": "stardew",
+                    },
+                ],
+                "sliders": [
+                    { "id": "count", "label": "n", "min": 1, "max": 32, "default": 4 },
+                    { "id": "steps", "label": "steps", "min": 10, "max": 100, "default": 40 },
+                ],
+                "action": "generate",
+                "output": "sprites",
+            },
+        })),
         other => PluginResponse::fail(format!("unknown command: {other}")),
     }
 }
