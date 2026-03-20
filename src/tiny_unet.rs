@@ -19,7 +19,7 @@ const CHANNELS: [usize; 3] = [32, 64, 64];
 /// 0 = character, 1 = weapon, 2 = potion, 3 = terrain, 4 = enemy,
 /// 5 = tree, 6 = building, 7 = animal, 8 = effect, 9 = food,
 /// 10 = armor, 11 = tool, 12 = vehicle, 13 = ui, 14 = misc
-pub const NUM_CLASSES: usize = 15;
+pub const NUM_CLASSES: usize = 16; // 15 classes + 1 null (CFG unconditional)
 
 /// Timestep embedding dimension.
 const TIME_DIM: usize = 64;

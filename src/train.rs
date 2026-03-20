@@ -30,6 +30,17 @@ pub struct TrainConfig {
     pub img_size: u32,
     pub medium: bool,
     pub anvil: bool,
+    /// Classifier-free guidance: probability of dropping class label during training.
+    /// 0.0 = never drop (no CFG), 0.1 = drop 10% of the time (recommended).
+    pub cfg_dropout: f64,
+    /// Enable EMA weight tracking. EMA weights saved as the final model.
+    pub ema: bool,
+    /// EMA decay rate. 0.9999 for long training, 0.999 for short.
+    pub ema_decay: f64,
+    /// Use cosine noise schedule instead of linear.
+    pub cosine_schedule: bool,
+    /// Min-SNR loss weighting. 0.0 = disabled, 5.0 = recommended.
+    pub min_snr_gamma: f64,
 }
 
 impl Default for TrainConfig {
@@ -43,9 +54,97 @@ impl Default for TrainConfig {
             img_size: 16,
             medium: false,
             anvil: false,
+            cfg_dropout: 0.1,
+            ema: true,
+            ema_decay: 0.9999,
+            cosine_schedule: true,
+            min_snr_gamma: 5.0,
         }
     }
 }
+
+/// Cosine noise schedule — spends more time in the mid-noise range
+/// where structure forms. Better edge quality than linear.
+fn cosine_schedule(t: f32) -> f32 {
+    let s = 0.008; // small offset to prevent singularity at t=0
+    let f_t = ((t + s) / (1.0 + s) * std::f32::consts::FRAC_PI_2).cos().powi(2);
+    let f_0 = (s / (1.0 + s) * std::f32::consts::FRAC_PI_2).cos().powi(2);
+    1.0 - (f_t / f_0).min(1.0)
+}
+
+/// Min-SNR weighting — downweight easy timesteps (high noise) so the model
+/// focuses on the hard ones (detail and structure).
+fn min_snr_weight(noise_amount: f32, gamma: f64) -> f32 {
+    if gamma <= 0.0 { return 1.0; }
+    // SNR = (1 - noise_amount)^2 / noise_amount^2
+    let clean = (1.0 - noise_amount).max(1e-6);
+    let noise = noise_amount.max(1e-6);
+    let snr = (clean / noise).powi(2);
+    let weight = (gamma as f32).min(snr) / snr;
+    weight.max(0.01) // floor to prevent zero-weight
+}
+
+/// EMA tracker — maintains exponential moving average of model weights.
+struct EmaWeights {
+    shadow: Vec<Tensor>,
+    decay: f64,
+}
+
+impl EmaWeights {
+    fn new(varmap: &VarMap, decay: f64) -> Self {
+        let shadow: Vec<Tensor> = varmap.all_vars()
+            .iter()
+            .map(|v| v.as_tensor().clone())
+            .collect();
+        Self { shadow, decay }
+    }
+
+    /// Update shadow weights: shadow = decay * shadow + (1 - decay) * current
+    fn update(&mut self, varmap: &VarMap) {
+        let vars = varmap.all_vars();
+        for (shadow, var) in self.shadow.iter_mut().zip(vars.iter()) {
+            let current = var.as_tensor();
+            // shadow = decay * shadow + (1 - decay) * current
+            if let Ok(new_shadow) = shadow.affine(self.decay, 0.0)
+                .and_then(|s| current.affine(1.0 - self.decay, 0.0)
+                    .and_then(|c| (&s + &c)))
+            {
+                *shadow = new_shadow;
+            }
+        }
+    }
+
+    /// Copy EMA weights into the varmap for saving/inference.
+    fn apply_to(&self, varmap: &VarMap) {
+        let vars = varmap.all_vars();
+        for (shadow, var) in self.shadow.iter().zip(vars.iter()) {
+            let _ = var.set(shadow);
+        }
+    }
+
+    /// Swap: save current weights, load EMA weights, return originals for restore.
+    fn swap_in(&self, varmap: &VarMap) -> Vec<Tensor> {
+        let vars = varmap.all_vars();
+        let originals: Vec<Tensor> = vars.iter()
+            .map(|v| v.as_tensor().clone())
+            .collect();
+        self.apply_to(varmap);
+        originals
+    }
+
+    /// Restore original weights after swap.
+    fn swap_out(originals: &[Tensor], varmap: &VarMap) {
+        let vars = varmap.all_vars();
+        for (orig, var) in originals.iter().zip(vars.iter()) {
+            let _ = var.set(orig);
+        }
+    }
+}
+
+/// Unconditional class ID for CFG — index 15 is the "null" class.
+/// Model sees this during training when class is dropped.
+/// Embedding table is 16 entries: 0-14 = real classes, 15 = unconditional.
+const CFG_NULL_CLASS: u32 = 15;
 
 /// Trait to unify TinyUNet and MediumUNet forward passes.
 pub trait DiffusionModel {
@@ -265,7 +364,8 @@ fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<
     x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?
 }
 
-/// Train loop — works with any DiffusionModel (Tiny or Medium).
+/// Train loop — works with any DiffusionModel (Tiny, Medium, Anvil).
+/// Supports CFG, EMA, cosine noise schedule, and min-SNR weighting.
 fn train_inner(
     model: &dyn DiffusionModel,
     varmap: &VarMap,
@@ -282,8 +382,23 @@ fn train_inner(
         ..Default::default()
     })?;
 
+    // EMA weight tracker
+    let mut ema = if config.ema {
+        Some(EmaWeights::new(varmap, config.ema_decay))
+    } else {
+        None
+    };
+
+    let sched = if config.cosine_schedule { "cosine" } else { "linear" };
+    let cfg_info = if config.cfg_dropout > 0.0 {
+        format!("cfg_drop={}", config.cfg_dropout)
+    } else {
+        "no-cfg".into()
+    };
+
     println!("training: {} epochs, bs={}, lr={}, {} samples", config.epochs, config.batch_size, config.lr, n);
     println!("augmentation: palette swap + h-flip (50% each)");
+    println!("schedule: {sched} | {cfg_info} | ema={} | min_snr={}", config.ema, config.min_snr_gamma);
 
     let t0 = std::time::Instant::now();
     let sz = config.img_size as usize;
@@ -319,20 +434,54 @@ fn train_inner(
                 }
 
                 batch_px.extend_from_slice(&sample);
-                batch_labels.push(dataset.labels[idx]);
+
+                // CFG: randomly drop class label to train unconditional path
+                if config.cfg_dropout > 0.0 && rng.r#gen_bool(config.cfg_dropout) {
+                    batch_labels.push(CFG_NULL_CLASS);
+                } else {
+                    batch_labels.push(dataset.labels[idx]);
+                }
             }
 
             let x_batch = Tensor::new(batch_px.as_slice(), device)?
                 .reshape((bs, 3, sz, sz))?;
             let y_batch = Tensor::new(batch_labels.as_slice(), device)?;
 
-            let noise_amount = Tensor::rand(0f32, 1f32, (bs,), device)?;
+            // Noise schedule: cosine or linear
+            let noise_raw = Tensor::rand(0f32, 1f32, (bs,), device)?;
+            let noise_amount = if config.cosine_schedule {
+                let raw_vals = noise_raw.to_vec1::<f32>()?;
+                let scheduled: Vec<f32> = raw_vals.iter().map(|&t| cosine_schedule(t)).collect();
+                Tensor::new(scheduled.as_slice(), device)?
+            } else {
+                noise_raw
+            };
+
             let noisy_x = corrupt(&x_batch, &noise_amount, device)?;
 
             let pred = model.forward(&noisy_x, &noise_amount, &y_batch)?;
-            let loss = (&pred - &x_batch)?.sqr()?.mean_all()?;
+            let per_sample_loss = (&pred - &x_batch)?.sqr()?;
+
+            // Min-SNR weighting
+            let loss = if config.min_snr_gamma > 0.0 {
+                let noise_vals = noise_amount.to_vec1::<f32>()?;
+                let weights: Vec<f32> = noise_vals.iter()
+                    .map(|&t| min_snr_weight(t, config.min_snr_gamma))
+                    .collect();
+                let w = Tensor::new(weights.as_slice(), device)?
+                    .unsqueeze(1)?.unsqueeze(2)?.unsqueeze(3)?;
+                let weighted = per_sample_loss.broadcast_mul(&w)?;
+                weighted.mean_all()?
+            } else {
+                per_sample_loss.mean_all()?
+            };
 
             opt.backward_step(&loss)?;
+
+            // Update EMA after each optimizer step
+            if let Some(ref mut ema) = ema {
+                ema.update(varmap);
+            }
 
             epoch_loss += loss.to_scalar::<f32>()? as f64;
             batch_count += 1;
@@ -346,14 +495,28 @@ fn train_inner(
         }
 
         if (epoch + 1) % 25 == 0 {
-            let cp = format!("{}.epoch{}", config.output, epoch + 1);
-            varmap.save(&cp)?;
-            println!("  checkpoint: {cp}");
+            // Save checkpoint with EMA weights
+            if let Some(ref ema) = ema {
+                let originals = ema.swap_in(varmap);
+                let cp = format!("{}.epoch{}", config.output, epoch + 1);
+                varmap.save(&cp)?;
+                println!("  checkpoint (ema): {cp}");
+                EmaWeights::swap_out(&originals, varmap);
+            } else {
+                let cp = format!("{}.epoch{}", config.output, epoch + 1);
+                varmap.save(&cp)?;
+                println!("  checkpoint: {cp}");
+            }
         }
     }
 
-    // Save final
-    println!("saving model to {}...", config.output);
+    // Save final — use EMA weights if available
+    if let Some(ref ema) = ema {
+        ema.apply_to(varmap);
+        println!("saving model (ema weights) to {}...", config.output);
+    } else {
+        println!("saving model to {}...", config.output);
+    }
     varmap.save(&config.output)?;
 
     let file_size = std::fs::metadata(&config.output)?.len();
@@ -393,7 +556,49 @@ pub fn train(config: &TrainConfig) -> Result<()> {
     Ok(())
 }
 
-/// Sample from a trained model (auto-detects size by param count).
+/// Default CFG guidance scale for inference.
+/// Higher = stronger class adherence, lower = more diversity.
+const DEFAULT_CFG_SCALE: f64 = 3.0;
+
+/// CFG-guided denoising step: run model conditioned + unconditional,
+/// blend predictions to amplify class signal.
+fn cfg_denoise(
+    model: &dyn DiffusionModel,
+    x: &Tensor,
+    t: &Tensor,
+    class_tensor: &Tensor,
+    null_class: &Tensor,
+    cfg_scale: f64,
+) -> candle_core::Result<Tensor> {
+    if cfg_scale <= 1.0 {
+        // No guidance, just conditional
+        return model.forward(x, t, class_tensor);
+    }
+    let cond = model.forward(x, t, class_tensor)?;
+    let uncond = model.forward(x, t, null_class)?;
+    // guided = uncond + scale * (cond - uncond)
+    let diff = (&cond - &uncond)?;
+    &uncond + (diff * cfg_scale)?
+}
+
+/// Convert prediction tensor to RGBA image.
+fn tensor_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
+    let x = x.clamp(0.0, 1.0)?;
+    let x = (x * 255.0)?.to_dtype(DType::U8)?;
+    let x = x.squeeze(0)?.permute((1, 2, 0))?;
+    let pixels = x.flatten_all()?.to_vec1::<u8>()?;
+
+    let mut rgba = RgbaImage::new(img_size, img_size);
+    for y in 0..img_size {
+        for px in 0..img_size {
+            let idx = (y * img_size + px) as usize * 3;
+            rgba.put_pixel(px, y, image::Rgba([pixels[idx], pixels[idx + 1], pixels[idx + 2], 255]));
+        }
+    }
+    Ok(rgba)
+}
+
+/// Sample from a trained TinyUNet (Cinder) with CFG.
 pub fn sample(
     model_path: &str,
     class_id: u32,
@@ -404,7 +609,6 @@ pub fn sample(
     let device = crate::pipeline::best_device();
     let dtype = DType::F32;
 
-    // Try loading as TinyUNet first, then MediumUNet
     println!("loading model from {model_path}...");
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
@@ -412,95 +616,31 @@ pub fn sample(
     varmap.load(model_path)?;
 
     let params = TinyUNet::param_count(&varmap);
-    println!("model: {} params, sampling {} images, {steps} steps", params, count);
+    println!("model: {} params, sampling {} images, {steps} steps, cfg={}", params, count, DEFAULT_CFG_SCALE);
+
+    let class_tensor = Tensor::new(&[class_id], &device)?;
+    let null_class = Tensor::new(&[CFG_NULL_CLASS], &device)?;
 
     let mut images = Vec::new();
-    let class_tensor = Tensor::new(&[class_id], &device)?;
-
     for i in 0..count {
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
             let t = Tensor::new(&[noise_level], &device)?;
-            let pred = model.forward(&x, &t, &class_tensor)?;
+            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        let x = x.clamp(0.0, 1.0)?;
-        let x = (x * 255.0)?.to_dtype(DType::U8)?;
-        let x = x.squeeze(0)?.permute((1, 2, 0))?;
-        let pixels = x.flatten_all()?.to_vec1::<u8>()?;
-
-        let mut rgba = RgbaImage::new(img_size, img_size);
-        for y in 0..img_size {
-            for px in 0..img_size {
-                let idx = (y * img_size + px) as usize * 3;
-                rgba.put_pixel(px, y, image::Rgba([pixels[idx], pixels[idx + 1], pixels[idx + 2], 255]));
-            }
-        }
-        images.push(rgba);
+        images.push(tensor_to_rgba(&x, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
     Ok(images)
 }
 
-/// Sample from a trained AnvilUNet model.
-pub fn sample_anvil(
-    model_path: &str,
-    class_id: u32,
-    img_size: u32,
-    count: u32,
-    steps: usize,
-) -> Result<Vec<RgbaImage>> {
-    let device = crate::pipeline::best_device();
-    let dtype = DType::F32;
-
-    println!("loading Anvil model from {model_path}...");
-    let mut varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
-    let model = AnvilUNet::new(vb)?;
-    varmap.load(model_path)?;
-
-    let params = AnvilUNet::param_count(&varmap);
-    println!("model: Anvil, {} params, sampling {} images, {steps} steps", params, count);
-
-    let mut images = Vec::new();
-    let class_tensor = Tensor::new(&[class_id], &device)?;
-
-    for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
-
-        for step in 0..steps {
-            let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
-            let pred = model.forward(&x, &t, &class_tensor)?;
-            let mix = 1.0 / (steps - step) as f64;
-            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
-        }
-
-        let x = x.clamp(0.0, 1.0)?;
-        let x = (x * 255.0)?.to_dtype(DType::U8)?;
-        let x = x.squeeze(0)?.permute((1, 2, 0))?;
-        let pixels = x.flatten_all()?.to_vec1::<u8>()?;
-
-        let mut rgba = RgbaImage::new(img_size, img_size);
-        for y in 0..img_size {
-            for px in 0..img_size {
-                let idx = (y * img_size + px) as usize * 3;
-                rgba.put_pixel(px, y, image::Rgba([pixels[idx], pixels[idx + 1], pixels[idx + 2], 255]));
-            }
-        }
-        images.push(rgba);
-        println!("  sample {}/{count}", i + 1);
-    }
-
-    Ok(images)
-}
-
-/// Sample from a trained MediumUNet (Quench) model.
+/// Sample from a trained MediumUNet (Quench) with CFG.
 pub fn sample_medium(
     model_path: &str,
     class_id: u32,
@@ -518,35 +658,66 @@ pub fn sample_medium(
     varmap.load(model_path)?;
 
     let params = MediumUNet::param_count(&varmap);
-    println!("model: Quench, {} params, sampling {} images, {steps} steps", params, count);
+    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}", params, count, DEFAULT_CFG_SCALE);
+
+    let class_tensor = Tensor::new(&[class_id], &device)?;
+    let null_class = Tensor::new(&[CFG_NULL_CLASS], &device)?;
 
     let mut images = Vec::new();
-    let class_tensor = Tensor::new(&[class_id], &device)?;
-
     for i in 0..count {
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
             let t = Tensor::new(&[noise_level], &device)?;
-            let pred = model.forward(&x, &t, &class_tensor)?;
+            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        let x = x.clamp(0.0, 1.0)?;
-        let x = (x * 255.0)?.to_dtype(DType::U8)?;
-        let x = x.squeeze(0)?.permute((1, 2, 0))?;
-        let pixels = x.flatten_all()?.to_vec1::<u8>()?;
+        images.push(tensor_to_rgba(&x, img_size)?);
+        println!("  sample {}/{count}", i + 1);
+    }
 
-        let mut rgba = RgbaImage::new(img_size, img_size);
-        for y in 0..img_size {
-            for px in 0..img_size {
-                let idx = (y * img_size + px) as usize * 3;
-                rgba.put_pixel(px, y, image::Rgba([pixels[idx], pixels[idx + 1], pixels[idx + 2], 255]));
-            }
+    Ok(images)
+}
+
+/// Sample from a trained AnvilUNet with CFG.
+pub fn sample_anvil(
+    model_path: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+) -> Result<Vec<RgbaImage>> {
+    let device = crate::pipeline::best_device();
+    let dtype = DType::F32;
+
+    println!("loading Anvil model from {model_path}...");
+    let mut varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
+    let model = AnvilUNet::new(vb)?;
+    varmap.load(model_path)?;
+
+    let params = AnvilUNet::param_count(&varmap);
+    println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={}", params, count, DEFAULT_CFG_SCALE);
+
+    let class_tensor = Tensor::new(&[class_id], &device)?;
+    let null_class = Tensor::new(&[CFG_NULL_CLASS], &device)?;
+
+    let mut images = Vec::new();
+    for i in 0..count {
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+
+        for step in 0..steps {
+            let noise_level = 1.0 - (step as f32 / steps as f32);
+            let t = Tensor::new(&[noise_level], &device)?;
+            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
+            let mix = 1.0 / (steps - step) as f64;
+            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
-        images.push(rgba);
+
+        images.push(tensor_to_rgba(&x, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 

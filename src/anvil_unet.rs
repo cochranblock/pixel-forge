@@ -17,7 +17,7 @@ use candle_nn::{self as nn, VarBuilder, VarMap};
 const CHANNELS: [usize; 3] = [96, 192, 192];
 
 /// Number of class labels for conditioning.
-pub const NUM_CLASSES: usize = 15;
+pub const NUM_CLASSES: usize = 16; // 15 classes + 1 null (CFG unconditional)
 
 /// Timestep embedding dimension — 2x wider than Quench.
 const TIME_DIM: usize = 256;
