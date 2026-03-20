@@ -20,6 +20,7 @@ mod expert;
 mod expert_train;
 mod moe;
 mod device_cap;
+mod cluster;
 mod app;
 
 use clap::{Parser, Subcommand};
@@ -278,7 +279,34 @@ enum Cmd {
         output: String,
     },
     /// Re-probe device capabilities (clears cached profile).
-    Probe,
+    Probe {
+        /// Output as JSON (for cluster probing).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Probe all nodes in the forge cluster.
+    ClusterProbe,
+    /// Deploy pixel-forge binary to all nodes (sync + build).
+    ClusterDeploy,
+    /// Sync trained models to all nodes.
+    ClusterSync,
+    /// Generate across the full cluster.
+    ClusterGenerate {
+        /// Class to generate.
+        class: String,
+        /// Total sprites to generate (distributed across nodes).
+        #[arg(short, long, default_value_t = 16)]
+        count: u32,
+        /// Denoising steps.
+        #[arg(long, default_value_t = 40)]
+        steps: usize,
+        /// Palette.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output file path.
+        #[arg(short, long, default_value = "cluster-output.png")]
+        output: String,
+    },
     /// MoE cascade: Cinder drafts → Quench + Experts refines.
     Cascade {
         /// Class to generate.
@@ -775,17 +803,62 @@ fn main() -> anyhow::Result<()> {
             }
             println!("saved: {output}");
         }
-        Cmd::Probe => {
-            println!("re-probing device capabilities...");
+        Cmd::Probe { json } => {
             let profile = device_cap::reprobe()?;
-            println!("backend: {}", profile.backend);
-            println!("ram: {} MB", profile.ram_mb);
-            println!("cinder: {:.1} ms/step", profile.cinder_ms);
-            if let Some(q) = profile.quench_ms {
-                println!("quench: {:.1} ms/step", q);
+            if json {
+                // Machine-readable output for cluster probing
+                println!("{}", serde_json::to_string(&profile)?);
+            } else {
+                println!("backend: {}", profile.backend);
+                println!("ram: {} MB", profile.ram_mb);
+                println!("cinder: {:.1} ms/step", profile.cinder_ms);
+                if let Some(q) = profile.quench_ms {
+                    println!("quench: {:.1} ms/step", q);
+                }
+                println!("selected tier: {}", profile.tier);
+                println!("model file: {}", profile.tier.model_file());
             }
-            println!("selected tier: {}", profile.tier);
-            println!("model file: {}", profile.tier.model_file());
+        }
+        Cmd::ClusterProbe => {
+            let state = cluster::probe_cluster()?;
+            println!("\ncluster summary:");
+            let nodes = state.active_nodes();
+            for n in &nodes {
+                let tier = n.profile.as_ref().map(|p| p.tier.to_string()).unwrap_or("?".into());
+                let backend = n.profile.as_ref().map(|p| p.backend.to_string()).unwrap_or("?".into());
+                println!("  {:6} | {:5} | {:6} | {:.1} spr/s",
+                    n.name, backend, tier, n.throughput);
+            }
+            println!("  total: {:.1} sprites/sec", state.total_throughput);
+        }
+        Cmd::ClusterDeploy => {
+            cluster::deploy_all()?;
+        }
+        Cmd::ClusterSync => {
+            cluster::sync_models_all()?;
+        }
+        Cmd::ClusterGenerate { class, count, steps, palette: palette_name, output } => {
+            let state = cluster::probe_cluster()?;
+            let pngs = cluster::cluster_generate(&class, count, steps, &palette_name, &state)?;
+
+            if pngs.is_empty() {
+                anyhow::bail!("no sprites generated");
+            }
+
+            // Decode PNGs into images for grid packing
+            let images: Vec<image::RgbaImage> = pngs.iter()
+                .filter_map(|bytes| {
+                    image::load_from_memory(bytes).ok().map(|img| img.to_rgba8())
+                })
+                .collect();
+
+            if images.len() == 1 {
+                images[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&images, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {} ({} sprites)", output, images.len());
         }
         Cmd::TrainExperts { quench, data, output, epochs, batch_size } => {
             expert_train::train_experts(&quench, &data, &output, epochs, batch_size)?;
