@@ -17,7 +17,9 @@ mod combiner;
 mod lora;
 mod medium_unet;
 mod expert;
+mod expert_train;
 mod moe;
+mod device_cap;
 
 use clap::{Parser, Subcommand};
 
@@ -236,6 +238,46 @@ enum Cmd {
         #[arg(short, long, default_value = "scene.png")]
         output: String,
     },
+    /// Train expert heads on frozen Quench base.
+    TrainExperts {
+        /// Path to frozen Quench model.
+        #[arg(long, default_value = "pixel-forge-quench.safetensors")]
+        quench: String,
+        /// Training data directory.
+        #[arg(short, long, default_value = "data")]
+        data: String,
+        /// Output experts file.
+        #[arg(short, long, default_value = "experts.safetensors")]
+        output: String,
+        /// Epochs.
+        #[arg(short, long, default_value_t = 20)]
+        epochs: usize,
+        /// Batch size.
+        #[arg(short, long, default_value_t = 32)]
+        batch_size: usize,
+    },
+    /// Auto-generate: detect device, pick best model, generate.
+    Auto {
+        /// Class to generate: character, weapon, potion, terrain, enemy, etc.
+        class: String,
+        /// Output size in pixels (must match training size).
+        #[arg(short, long, default_value_t = 16)]
+        size: u32,
+        /// Number of images to generate.
+        #[arg(short, long, default_value_t = 1)]
+        count: u32,
+        /// Denoising steps.
+        #[arg(long, default_value_t = 40)]
+        steps: usize,
+        /// Palette for color quantization.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output file path.
+        #[arg(short, long, default_value = "generated.png")]
+        output: String,
+    },
+    /// Re-probe device capabilities (clears cached profile).
+    Probe,
     /// MoE cascade: Cinder drafts → Quench + Experts refines.
     Cascade {
         /// Class to generate.
@@ -690,6 +732,57 @@ fn main() -> anyhow::Result<()> {
             scene_img.save(&output)?;
             println!("saved scene: {} ({}×{} px, {} sprites placed)",
                 output, scene::SCENE_PX, scene::SCENE_PX, grid.sprite_count());
+        }
+        Cmd::Auto { class, size, count, steps, palette: palette_name, output } => {
+            let pal = palette::load_palette(&palette_name)?;
+            println!("auto-detect: picking best model for this device...");
+
+            let raw_images = device_cap::auto_sample(
+                {
+                    let class_names = [
+                        "character", "weapon", "potion", "terrain", "enemy",
+                        "tree", "building", "animal", "effect", "food",
+                        "armor", "tool", "vehicle", "ui", "misc",
+                    ];
+                    class_names.iter()
+                        .position(|&n| n == class.to_lowercase())
+                        .unwrap_or(14) as u32
+                },
+                size,
+                count,
+                steps,
+            )?;
+
+            let processed: Vec<image::RgbaImage> = raw_images
+                .into_iter()
+                .map(|img| {
+                    let snapped = grid::snap_to_grid(&img, size);
+                    palette::quantize(&snapped, &pal)
+                })
+                .collect();
+
+            if count == 1 {
+                processed[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&processed, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {output}");
+        }
+        Cmd::Probe => {
+            println!("re-probing device capabilities...");
+            let profile = device_cap::reprobe()?;
+            println!("backend: {}", profile.backend);
+            println!("ram: {} MB", profile.ram_mb);
+            println!("cinder: {:.1} ms/step", profile.cinder_ms);
+            if let Some(q) = profile.quench_ms {
+                println!("quench: {:.1} ms/step", q);
+            }
+            println!("selected tier: {}", profile.tier);
+            println!("model file: {}", profile.tier.model_file());
+        }
+        Cmd::TrainExperts { quench, data, output, epochs, batch_size } => {
+            expert_train::train_experts(&quench, &data, &output, epochs, batch_size)?;
         }
         Cmd::Cascade { class, cinder, quench, experts, count, cinder_steps, quench_steps, palette: palette_name, output } => {
             let class_names = [
