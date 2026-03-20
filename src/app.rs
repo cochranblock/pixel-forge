@@ -7,6 +7,7 @@
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
+use crate::cluster::{self, ClusterState};
 use crate::device_cap::{self, DeviceProfile, Tier};
 use crate::palette;
 use crate::grid;
@@ -33,6 +34,9 @@ struct GenerationState {
 pub struct PixelForgeApp {
     profile: Option<DeviceProfile>,
     profile_error: Option<String>,
+    cluster: Arc<Mutex<Option<ClusterState>>>,
+    cluster_probing: Arc<Mutex<bool>>,
+    use_cluster: bool,
     selected_class: usize,
     selected_palette: usize,
     gen_count: u32,
@@ -48,6 +52,9 @@ impl Default for PixelForgeApp {
         Self {
             profile: None,
             profile_error: None,
+            cluster: Arc::new(Mutex::new(None)),
+            cluster_probing: Arc::new(Mutex::new(false)),
+            use_cluster: true,
             selected_class: 0, // character
             selected_palette: 0, // stardew
             gen_count: 4,
@@ -67,40 +74,76 @@ impl Default for PixelForgeApp {
 }
 
 impl PixelForgeApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self::default();
 
-        // Auto-detect device on startup
+        // Auto-detect local device on startup
         match device_cap::auto_select() {
             Ok(p) => app.profile = Some(p),
             Err(e) => app.profile_error = Some(format!("{e}")),
+        }
+
+        // Probe cluster in background — don't block app launch
+        {
+            let cluster = Arc::clone(&app.cluster);
+            let probing = Arc::clone(&app.cluster_probing);
+            let ctx = cc.egui_ctx.clone();
+            *probing.lock().unwrap() = true;
+            std::thread::spawn(move || {
+                if let Ok(state) = cluster::probe_cluster() {
+                    *cluster.lock().unwrap() = Some(state);
+                }
+                *probing.lock().unwrap() = false;
+                ctx.request_repaint();
+            });
         }
 
         app
     }
 
     fn start_generation(&mut self, ctx: &egui::Context) {
-        let class_id = self.selected_class as u32;
+        let class_name = CLASS_NAMES[self.selected_class].to_string();
         let palette_name = PALETTE_NAMES[self.selected_palette].to_string();
         let count = self.gen_count;
         let steps = self.gen_steps;
-        let profile = self.profile.clone().unwrap();
         let state = Arc::clone(&self.gen_state);
         let ctx = ctx.clone();
+
+        let cluster_state = if self.use_cluster {
+            self.cluster.lock().unwrap().clone()
+        } else {
+            None
+        };
+        let local_profile = self.profile.clone();
 
         {
             let mut s = state.lock().unwrap();
             s.generating = true;
-            s.status = format!("generating {} {}s with {}...", count, CLASS_NAMES[class_id as usize], profile.tier);
             s.result_pixels = None;
+            if cluster_state.is_some() {
+                let active = cluster_state.as_ref().unwrap().active_nodes().len();
+                s.status = format!("forging {} {}s across {} nodes...", count, class_name, active);
+            } else {
+                let tier = local_profile.as_ref().map(|p| p.tier.to_string()).unwrap_or("?".into());
+                s.status = format!("generating {} {}s with {}...", count, class_name, tier);
+            }
         }
 
         std::thread::spawn(move || {
-            let result = generate_for_display(profile.tier, class_id, count, steps, &palette_name);
+            let result = if let Some(ref cluster) = cluster_state {
+                // Cluster mode: distribute across all nodes
+                cluster_generate_for_display(&class_name, count, steps, &palette_name, cluster)
+            } else if let Some(ref profile) = local_profile {
+                // Local only
+                generate_for_display(profile.tier, class_name_to_id(&class_name), count, steps, &palette_name)
+            } else {
+                Err(anyhow::anyhow!("no device profile"))
+            };
+
             let mut s = state.lock().unwrap();
             s.generating = false;
             match result {
-                Ok((pixels, w, h, version_bump)) => {
+                Ok((pixels, w, h, _)) => {
                     s.status = format!("done — {} sprites", count);
                     s.result_pixels = Some(pixels);
                     s.result_width = w;
@@ -128,7 +171,7 @@ impl eframe::App for PixelForgeApp {
                 ui.add_space(8.0);
             });
 
-            // Device info bar
+            // Device + cluster info bar
             if let Some(ref profile) = self.profile {
                 ui.horizontal(|ui| {
                     ui.label(format!(
@@ -136,10 +179,34 @@ impl eframe::App for PixelForgeApp {
                         profile.backend, profile.ram_mb, profile.tier
                     ));
                 });
+            }
+            {
+                let probing = *self.cluster_probing.lock().unwrap();
+                let cluster = self.cluster.lock().unwrap();
+                if probing {
+                    ui.horizontal(|ui| {
+                        ui.label("probing cluster nodes...");
+                    });
+                } else if let Some(ref cs) = *cluster {
+                    let active = cs.active_nodes().len();
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.use_cluster, "forge cluster");
+                        if self.use_cluster {
+                            ui.label(format!(
+                                "{} nodes | {:.0} sprites/sec",
+                                active, cs.total_throughput
+                            ));
+                        } else {
+                            ui.label("local only");
+                        }
+                    });
+                }
+            }
+            if self.profile.is_some() || self.profile_error.is_some() {
                 ui.separator();
-            } else if let Some(ref err) = self.profile_error {
+            }
+            if let Some(ref err) = self.profile_error {
                 ui.colored_label(egui::Color32::RED, format!("device error: {err}"));
-                ui.separator();
             }
 
             ui.add_space(8.0);
@@ -183,10 +250,11 @@ impl eframe::App for PixelForgeApp {
 
             ui.add_space(12.0);
 
-            // Count + steps
+            // Count + steps — cluster mode allows bigger batches
+            let max_count = if self.use_cluster { 64 } else { 16 };
             ui.horizontal(|ui| {
                 ui.label("count:");
-                ui.add(egui::Slider::new(&mut self.gen_count, 1..=16));
+                ui.add(egui::Slider::new(&mut self.gen_count, 1..=max_count));
                 ui.add_space(16.0);
                 ui.label("steps:");
                 ui.add(egui::Slider::new(&mut self.gen_steps, 10..=100));
@@ -202,7 +270,15 @@ impl eframe::App for PixelForgeApp {
 
             let can_generate = self.profile.is_some() && !generating;
             ui.vertical_centered(|ui| {
-                let btn = egui::Button::new(if generating { "generating..." } else { "Generate" })
+                let label = if generating {
+                    "forging...".to_string()
+                } else if self.use_cluster && self.cluster.lock().unwrap().is_some() {
+                    let n = self.cluster.lock().unwrap().as_ref().unwrap().active_nodes().len();
+                    format!("Forge ({n} nodes)")
+                } else {
+                    "Generate".to_string()
+                };
+                let btn = egui::Button::new(label)
                     .min_size(egui::vec2(200.0, 48.0));
                 let btn = ui.add_enabled(can_generate, btn);
                 if btn.clicked() {
@@ -305,6 +381,45 @@ fn generate_for_display(
     let pixels = sheet.into_raw();
 
     Ok((pixels, w, h, 1))
+}
+
+/// Generate via cluster and return RGBA pixels for display.
+fn cluster_generate_for_display(
+    class: &str,
+    count: u32,
+    steps: usize,
+    palette_name: &str,
+    cluster_state: &ClusterState,
+) -> anyhow::Result<(Vec<u8>, u32, u32, u64)> {
+    let pngs = cluster::cluster_generate(class, count, steps, palette_name, cluster_state)?;
+
+    if pngs.is_empty() {
+        anyhow::bail!("no sprites generated from cluster");
+    }
+
+    // Decode PNGs into images
+    let images: Vec<image::RgbaImage> = pngs.iter()
+        .filter_map(|bytes| {
+            image::load_from_memory(bytes).ok().map(|img| img.to_rgba8())
+        })
+        .collect();
+
+    if images.is_empty() {
+        anyhow::bail!("failed to decode cluster output");
+    }
+
+    let sheet = crate::sheet::pack_grid(&images, (images.len() as u32).min(8));
+    let w = sheet.width();
+    let h = sheet.height();
+    let pixels = sheet.into_raw();
+
+    Ok((pixels, w, h, 1))
+}
+
+fn class_name_to_id(class: &str) -> u32 {
+    CLASS_NAMES.iter()
+        .position(|&n| n == class.to_lowercase())
+        .unwrap_or(14) as u32
 }
 
 /// Launch the app. Called when no CLI args are given.
