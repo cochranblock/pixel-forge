@@ -291,6 +291,11 @@ enum Cmd {
         #[arg(short, long, default_value = "cluster-output.png")]
         output: String,
     },
+    /// GPU scheduling — lock/queue/release GPU for training jobs.
+    Gpu {
+        #[command(subcommand)]
+        action: GpuAction,
+    },
     /// Plugin mode — JSON request/response for kova integration.
     Plugin {
         /// Keep process alive, read JSON lines continuously.
@@ -325,6 +330,36 @@ enum Cmd {
         /// Output file.
         #[arg(short, long, default_value = "cascade.png")]
         output: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum GpuAction {
+    /// Acquire GPU lock on a node.
+    Lock {
+        node: String,
+        job: String,
+    },
+    /// Release GPU lock.
+    Release {
+        node: String,
+    },
+    /// Show GPU lock/queue status across all nodes.
+    Status,
+    /// Queue a job for later execution.
+    Queue {
+        node: String,
+        job: String,
+        /// Command to run when dequeued.
+        #[arg(short, long)]
+        command: String,
+        /// Priority (0=highest, default 5).
+        #[arg(short, long, default_value_t = 5)]
+        priority: u8,
+    },
+    /// Pop and print the next queued job.
+    Drain {
+        node: String,
     },
 }
 
@@ -852,6 +887,17 @@ fn main() -> anyhow::Result<()> {
                 sheet_img.save(&output)?;
             }
             println!("saved: {} ({} sprites)", output, images.len());
+        }
+        Cmd::Gpu { action } => {
+            match action {
+                GpuAction::Lock { node, job } => gpu_lock::acquire(&node, &job)?,
+                GpuAction::Release { node } => gpu_lock::release(&node)?,
+                GpuAction::Status => gpu_lock::status()?,
+                GpuAction::Queue { node, job, command, priority } => {
+                    gpu_lock::enqueue(&node, &job, &command, priority)?;
+                }
+                GpuAction::Drain { node } => { gpu_lock::drain(&node)?; }
+            }
         }
         Cmd::Plugin { r#loop } => {
             if r#loop {
