@@ -2,30 +2,8 @@
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
 //! pixel-forge — Pixel art game asset generator.
 //! Stardew Valley / Starbound quality. Local-first, Rust-native.
-#![allow(dead_code)] // Future-use functions in scene/combiner/lora/swipe_store
 
-mod palette;
-mod grid;
-mod sheet;
-mod pipeline;
-mod tiny_unet;
-mod train;
-mod curate;
-mod judge;
-mod swipe_store;
-mod scene;
-mod combiner;
-mod lora;
-mod medium_unet;
-mod anvil_unet;
-mod expert;
-mod expert_train;
-mod moe;
-mod device_cap;
-mod cluster;
-mod plugin;
-mod app;
-
+use pixel_forge::*;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
