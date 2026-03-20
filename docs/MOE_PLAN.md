@@ -1,5 +1,8 @@
 # Pixel Forge MoE — Mixture of Experts for Micro Diffusion
 
+> **Status:** IMPLEMENTED. Expert training in progress on lf RTX 3070 (epoch 15/20 as of 2026-03-20).
+> See [TIMELINE_OF_INVENTION.md](TIMELINE_OF_INVENTION.md) for the build narrative.
+
 ## The Idea
 
 One base model (Quench, 5.8M params) loaded once in RAM. Multiple tiny expert heads (~50K params each) that specialize in different aspects of sprite generation. A router (the Judge model we already built) decides which expert fires at each denoising stage.
