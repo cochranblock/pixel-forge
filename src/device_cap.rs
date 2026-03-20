@@ -425,9 +425,7 @@ fn sample_tier(
         Tier::Cinder => crate::train::sample(tier.model_file(), class_id, img_size, count, steps),
         Tier::Quench => crate::train::sample_medium(tier.model_file(), class_id, img_size, count, steps),
         Tier::Anvil => {
-            // Anvil uses MediumUNet architecture (same struct, different weights)
-            // When Anvil gets its own arch, swap this out
-            crate::train::sample_medium(tier.model_file(), class_id, img_size, count, steps)
+            crate::train::sample_anvil(tier.model_file(), class_id, img_size, count, steps)
         }
     }
 }
