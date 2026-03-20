@@ -253,7 +253,7 @@ fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<
     let noise = Tensor::rand(0f32, 1f32, x.shape(), device)?;
     let a = amount.unsqueeze(1)?.unsqueeze(2)?.unsqueeze(3)?;
     let one_minus_a = (1.0f64 - &a)?;
-    (x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?)
+    x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?
 }
 
 /// Train loop — works with any DiffusionModel (Tiny or Medium).

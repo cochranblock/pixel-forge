@@ -112,7 +112,7 @@ pub fn generate(prompt: &str, size: u32, count: u32) -> Result<Vec<RgbaImage>> {
 /// SDXL Turbo inference — 1 step, no guidance, Metal GPU.
 fn generate_turbo(prompt: &str, size: u32, count: u32) -> Result<Vec<RgbaImage>> {
     use candle_core::{DType, Module, Tensor};
-    use candle_transformers::models::stable_diffusion::{self, schedulers::Scheduler};
+    use candle_transformers::models::stable_diffusion::{self};
 
     let device = best_device();
     let dtype = DType::F16; // FP16 for speed + lower memory
