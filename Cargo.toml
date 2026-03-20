@@ -6,15 +6,20 @@ version = "0.1.0"
 edition = "2024"
 description = "Pixel art game asset generator. Stardew/Starbound quality. Local-first, no cloud."
 
+[lib]
+name = "pixel_forge"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pixel-forge"
 path = "src/main.rs"
 
 [features]
-default = ["metal"]
+default = ["metal", "sd-pipeline"]
 metal = ["candle-core/metal", "candle-nn/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
-# accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
+# SD pipeline needs hf-hub + tokenizers for downloading models. Not needed on mobile.
+sd-pipeline = ["dep:hf-hub", "dep:tokenizers", "dep:candle-transformers"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -25,13 +30,13 @@ tokio = { version = "1", features = ["full"] }
 image = "0.25"
 candle-core = "0.8"
 candle-nn = "0.8"
-candle-transformers = "0.8"
-hf-hub = "0.4"
-tokenizers = "0.21"
+candle-transformers = { version = "0.8", optional = true }
+hf-hub = { version = "0.4", optional = true }
+tokenizers = { version = "0.21", optional = true }
 rand = "0.8"
 walkdir = "2"
 bincode = "1"
 zstd = "0.13"
-eframe = "0.31"
-egui = "0.31"
+eframe = "0.33"
+egui = "0.33"
 base64 = "0.22"

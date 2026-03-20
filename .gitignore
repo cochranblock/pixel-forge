@@ -1,2 +1,4 @@
 pixel-forge-*.safetensors*
 output/
+android/target/
+android/Cargo.lock

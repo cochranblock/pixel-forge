@@ -1,0 +1,30 @@
+# Unlicense — cochranblock.org
+# Contributors: GotEmCoach, KOVA, Claude Opus 4.6
+
+# Pixel Forge Android — egui app cross-compiled for ARM64 Android.
+
+[workspace]
+
+[package]
+name = "pixel-forge-android"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "pixel_forge_android"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+pixel-forge = { path = "..", default-features = false }
+log = "0.4"
+android_logger = "0.14"
+android-activity = { version = "0.6", features = ["native-activity"] }
+eframe = "0.33"
+egui = "0.33"
+
+[package.metadata.android]
+package = "org.cochranblock.pixelforge"
+label = "Pixel Forge"
+target_sdk_version = 34
+min_sdk_version = 28
