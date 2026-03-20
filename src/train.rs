@@ -18,6 +18,7 @@ use std::path::Path;
 
 use crate::tiny_unet::TinyUNet;
 use crate::medium_unet::MediumUNet;
+use crate::anvil_unet::AnvilUNet;
 
 /// Training config.
 pub struct TrainConfig {
@@ -28,6 +29,7 @@ pub struct TrainConfig {
     pub lr: f64,
     pub img_size: u32,
     pub medium: bool,
+    pub anvil: bool,
 }
 
 impl Default for TrainConfig {
@@ -40,6 +42,7 @@ impl Default for TrainConfig {
             lr: 1e-3,
             img_size: 16,
             medium: false,
+            anvil: false,
         }
     }
 }
@@ -58,6 +61,12 @@ impl DiffusionModel for TinyUNet {
 impl DiffusionModel for MediumUNet {
     fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor> {
         MediumUNet::forward(self, x, timestep, class_id)
+    }
+}
+
+impl DiffusionModel for AnvilUNet {
+    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor> {
+        AnvilUNet::forward(self, x, timestep, class_id)
     }
 }
 
@@ -364,7 +373,12 @@ pub fn train(config: &TrainConfig) -> Result<()> {
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
 
-    if config.medium {
+    if config.anvil {
+        let model = AnvilUNet::new(vb)?;
+        let params = AnvilUNet::param_count(&varmap);
+        println!("model: Anvil (AnvilUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        train_inner(&model, &varmap, config, &dataset, &device)?;
+    } else if config.medium {
         let model = MediumUNet::new(vb)?;
         let params = MediumUNet::param_count(&varmap);
         println!("model: Quench (MediumUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
@@ -399,6 +413,59 @@ pub fn sample(
 
     let params = TinyUNet::param_count(&varmap);
     println!("model: {} params, sampling {} images, {steps} steps", params, count);
+
+    let mut images = Vec::new();
+    let class_tensor = Tensor::new(&[class_id], &device)?;
+
+    for i in 0..count {
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+
+        for step in 0..steps {
+            let noise_level = 1.0 - (step as f32 / steps as f32);
+            let t = Tensor::new(&[noise_level], &device)?;
+            let pred = model.forward(&x, &t, &class_tensor)?;
+            let mix = 1.0 / (steps - step) as f64;
+            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+        }
+
+        let x = x.clamp(0.0, 1.0)?;
+        let x = (x * 255.0)?.to_dtype(DType::U8)?;
+        let x = x.squeeze(0)?.permute((1, 2, 0))?;
+        let pixels = x.flatten_all()?.to_vec1::<u8>()?;
+
+        let mut rgba = RgbaImage::new(img_size, img_size);
+        for y in 0..img_size {
+            for px in 0..img_size {
+                let idx = (y * img_size + px) as usize * 3;
+                rgba.put_pixel(px, y, image::Rgba([pixels[idx], pixels[idx + 1], pixels[idx + 2], 255]));
+            }
+        }
+        images.push(rgba);
+        println!("  sample {}/{count}", i + 1);
+    }
+
+    Ok(images)
+}
+
+/// Sample from a trained AnvilUNet model.
+pub fn sample_anvil(
+    model_path: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+) -> Result<Vec<RgbaImage>> {
+    let device = crate::pipeline::best_device();
+    let dtype = DType::F32;
+
+    println!("loading Anvil model from {model_path}...");
+    let mut varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
+    let model = AnvilUNet::new(vb)?;
+    varmap.load(model_path)?;
+
+    let params = AnvilUNet::param_count(&varmap);
+    println!("model: Anvil, {} params, sampling {} images, {steps} steps", params, count);
 
     let mut images = Vec::new();
     let class_tensor = Tensor::new(&[class_id], &device)?;

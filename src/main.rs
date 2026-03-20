@@ -17,6 +17,7 @@ mod scene;
 mod combiner;
 mod lora;
 mod medium_unet;
+mod anvil_unet;
 mod expert;
 mod expert_train;
 mod moe;
@@ -95,9 +96,12 @@ enum Cmd {
         /// Image size (square). Must match training data.
         #[arg(long, default_value_t = 16)]
         img_size: u32,
-        /// Use MediumUNet (~4.2M params) instead of TinyUNet (~1.1M params).
+        /// Use MediumUNet (~5.8M params) instead of TinyUNet (~1.1M params).
         #[arg(long)]
         medium: bool,
+        /// Use AnvilUNet (~16M params) — the XL model.
+        #[arg(long)]
+        anvil: bool,
     },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
@@ -425,6 +429,7 @@ fn main() -> anyhow::Result<()> {
             lr,
             img_size,
             medium,
+            anvil,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -434,6 +439,7 @@ fn main() -> anyhow::Result<()> {
                 lr,
                 img_size,
                 medium,
+                anvil,
             };
             train::train(&config)?;
         }
