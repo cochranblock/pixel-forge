@@ -64,13 +64,13 @@ impl DiffusionModel for MediumUNet {
 /// Pre-decoded dataset — all images as flat f32 vecs, packed into one blob.
 /// bincode+zstd serialized for instant reload.
 #[derive(Serialize, Deserialize)]
-struct PackedDataset {
-    img_size: u32,
+pub struct PackedDataset {
+    pub img_size: u32,
     /// Flat f32 pixels: [sample0_r, sample0_g, sample0_b, sample1_r, ...] channel-first per sample
-    pixels: Vec<f32>,
-    labels: Vec<u32>,
+    pub pixels: Vec<f32>,
+    pub labels: Vec<u32>,
     /// Number of f32 values per sample (3 * img_size * img_size)
-    stride: usize,
+    pub stride: usize,
 }
 
 /// Preprocess: decode all PNGs → RAM → bincode+zstd file.

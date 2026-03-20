@@ -11,11 +11,11 @@
 //! Two models + four experts = 27 MB total. Sub-second on Metal.
 
 use anyhow::Result;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Tensor};
 use candle_nn::{VarBuilder, VarMap};
 use image::RgbaImage;
 
-use crate::expert::{self, ExpertSet};
+use crate::expert;
 use crate::medium_unet::MediumUNet;
 use crate::tiny_unet::TinyUNet;
 
