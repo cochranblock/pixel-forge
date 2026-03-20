@@ -92,33 +92,38 @@ struct EmaWeights {
 
 impl EmaWeights {
     fn new(varmap: &VarMap, decay: f64) -> Self {
+        // Store shadow weights on CPU to avoid GPU memory pressure
         let shadow: Vec<Tensor> = varmap.all_vars()
             .iter()
-            .map(|v| v.as_tensor().clone())
+            .filter_map(|v| v.as_tensor().to_device(&Device::Cpu).ok())
             .collect();
         Self { shadow, decay }
     }
 
-    /// Update shadow weights: shadow = decay * shadow + (1 - decay) * current
+    /// Update shadow weights on CPU: shadow = decay * shadow + (1 - decay) * current
     fn update(&mut self, varmap: &VarMap) {
         let vars = varmap.all_vars();
         for (shadow, var) in self.shadow.iter_mut().zip(vars.iter()) {
-            let current = var.as_tensor();
-            // shadow = decay * shadow + (1 - decay) * current
-            if let Ok(new_shadow) = shadow.affine(self.decay, 0.0)
-                .and_then(|s| current.affine(1.0 - self.decay, 0.0)
-                    .and_then(|c| (&s + &c)))
-            {
-                *shadow = new_shadow;
+            if let Ok(current_cpu) = var.as_tensor().to_device(&Device::Cpu) {
+                if let Ok(new_shadow) = shadow.affine(self.decay, 0.0)
+                    .and_then(|s| current_cpu.affine(1.0 - self.decay, 0.0)
+                        .and_then(|c| &s + &c))
+                {
+                    *shadow = new_shadow;
+                }
             }
         }
     }
 
     /// Copy EMA weights into the varmap for saving/inference.
+    /// Moves from CPU back to the device of the original weights.
     fn apply_to(&self, varmap: &VarMap) {
         let vars = varmap.all_vars();
         for (shadow, var) in self.shadow.iter().zip(vars.iter()) {
-            let _ = var.set(shadow);
+            let device = var.as_tensor().device().clone();
+            if let Ok(on_device) = shadow.to_device(&device) {
+                let _ = var.set(&on_device);
+            }
         }
     }
 
