@@ -202,12 +202,18 @@ pub struct MediumUNet {
 }
 
 impl MediumUNet {
+    /// Build with default NUM_CLASSES.
     pub fn new(vb: VarBuilder) -> Result<Self> {
+        Self::with_classes(vb, NUM_CLASSES)
+    }
+
+    /// Build with explicit class count (use 15 for pre-CFG saved weights).
+    pub fn with_classes(vb: VarBuilder, num_classes: usize) -> Result<Self> {
         let conv_in = nn::conv2d(3, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
 
         let time_mlp1 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp1"))?;
         let time_mlp2 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp2"))?;
-        let class_emb = nn::embedding(NUM_CLASSES, TIME_DIM, vb.pp("class_emb"))?;
+        let class_emb = nn::embedding(num_classes, TIME_DIM, vb.pp("class_emb"))?;
 
         // Encoder: 3 levels, 3 ResBlocks each
         let mut down_blocks = Vec::new();
