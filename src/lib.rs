@@ -30,3 +30,4 @@ pub mod cluster;
 pub mod discriminator;
 pub mod plugin;
 pub mod app;
+pub mod gpu_lock;
