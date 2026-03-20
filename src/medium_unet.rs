@@ -17,7 +17,7 @@ use candle_nn::{self as nn, VarBuilder, VarMap};
 const CHANNELS: [usize; 3] = [64, 128, 128];
 
 /// Number of class labels for conditioning.
-pub const NUM_CLASSES: usize = 15;
+pub const NUM_CLASSES: usize = 16; // 15 classes + 1 null (CFG unconditional)
 
 /// Timestep embedding dimension — 2x wider than Tiny.
 const TIME_DIM: usize = 128;

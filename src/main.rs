@@ -418,6 +418,7 @@ fn main() -> anyhow::Result<()> {
                 img_size,
                 medium,
                 anvil,
+                ..Default::default()
             };
             train::train(&config)?;
         }
