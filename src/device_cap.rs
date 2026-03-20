@@ -57,7 +57,7 @@ impl std::fmt::Display for Tier {
 }
 
 /// Cached device profile — written to disk after first probe.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceProfile {
     /// Which GPU backend is active.
     pub backend: Backend,
@@ -400,6 +400,10 @@ pub fn auto_sample(
 }
 
 /// Find the best model tier that actually has a file on disk.
+pub fn best_available() -> Tier {
+    best_available_tier()
+}
+
 fn best_available_tier() -> Tier {
     for tier in [Tier::Anvil, Tier::Quench, Tier::Cinder] {
         if std::path::Path::new(tier.model_file()).exists() {

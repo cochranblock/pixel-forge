@@ -20,6 +20,7 @@ mod expert;
 mod expert_train;
 mod moe;
 mod device_cap;
+mod app;
 
 use clap::{Parser, Subcommand};
 
@@ -27,7 +28,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "pixel-forge", about = "Pixel art game asset generator")]
 struct Cli {
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -312,7 +313,12 @@ enum Cmd {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    match cli.cmd {
+    let cmd = match cli.cmd {
+        Some(cmd) => cmd,
+        None => return app::run(),
+    };
+
+    match cmd {
         Cmd::Sprite {
             prompt,
             size,
