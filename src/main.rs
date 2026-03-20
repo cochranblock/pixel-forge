@@ -21,6 +21,7 @@ mod expert_train;
 mod moe;
 mod device_cap;
 mod cluster;
+mod plugin;
 mod app;
 
 use clap::{Parser, Subcommand};
@@ -306,6 +307,12 @@ enum Cmd {
         /// Output file path.
         #[arg(short, long, default_value = "cluster-output.png")]
         output: String,
+    },
+    /// Plugin mode — JSON request/response for kova integration.
+    Plugin {
+        /// Keep process alive, read JSON lines continuously.
+        #[arg(long)]
+        r#loop: bool,
     },
     /// MoE cascade: Cinder drafts → Quench + Experts refines.
     Cascade {
@@ -859,6 +866,13 @@ fn main() -> anyhow::Result<()> {
                 sheet_img.save(&output)?;
             }
             println!("saved: {} ({} sprites)", output, images.len());
+        }
+        Cmd::Plugin { r#loop } => {
+            if r#loop {
+                plugin::run_loop()?;
+            } else {
+                plugin::run()?;
+            }
         }
         Cmd::TrainExperts { quench, data, output, epochs, batch_size } => {
             expert_train::train_experts(&quench, &data, &output, epochs, batch_size)?;
