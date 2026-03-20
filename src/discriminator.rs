@@ -275,7 +275,7 @@ pub fn quality_gate(
 /// Generate with quality gate — keep re-rolling rejects.
 /// Returns only sprites that pass the discriminator threshold.
 pub fn generate_with_gate(
-    tier: crate::device_cap::Tier,
+    _tier: crate::device_cap::Tier,
     class_id: u32,
     count: u32,
     steps: usize,

@@ -1,5 +1,7 @@
 # Unlicense — cochranblock.org
 # Contributors: GotEmCoach, KOVA, Claude Opus 4.6
+[workspace]
+
 [package]
 name = "pixel-forge"
 version = "0.1.0"
