@@ -43,3 +43,5 @@ eframe = "0.33"
 egui = "0.33"
 base64 = "0.22"
 dirs = "6.0.0"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
