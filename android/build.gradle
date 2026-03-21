@@ -1,0 +1,4 @@
+// Pixel Forge — top-level Gradle build
+plugins {
+    id 'com.android.application' version '8.2.2' apply false
+}

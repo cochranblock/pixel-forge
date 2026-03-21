@@ -4,6 +4,10 @@
 
 use android_activity::AndroidApp;
 
+/// Bundled Cinder model (TinyUNet, 4.2MB).
+/// Embedded at compile time so it ships inside the .so — no asset extraction needed.
+const CINDER_MODEL: &[u8] = include_bytes!("../../pixel-forge-tiny.safetensors");
+
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
     android_logger::init_once(
@@ -13,9 +17,19 @@ fn android_main(app: AndroidApp) {
     log::info!("pixel-forge android starting");
 
     // Set HOME to Android internal storage so model paths resolve
-    if let Some(path) = app.internal_data_path() {
-        unsafe { std::env::set_var("HOME", &path) };
-        log::info!("HOME={}", path.display());
+    let data_dir = app.internal_data_path().expect("no internal data path");
+    unsafe { std::env::set_var("HOME", &data_dir) };
+    log::info!("HOME={}", data_dir.display());
+
+    // Extract bundled model on first launch
+    let model_dest = data_dir.join("pixel-forge-cinder.safetensors");
+    if !model_dest.exists() {
+        log::info!("extracting bundled Cinder model ({} bytes)...", CINDER_MODEL.len());
+        if let Err(e) = std::fs::write(&model_dest, CINDER_MODEL) {
+            log::error!("failed to extract model: {e}");
+        } else {
+            log::info!("model extracted to {}", model_dest.display());
+        }
     }
 
     let kb_app = app.clone();

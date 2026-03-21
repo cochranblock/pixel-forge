@@ -83,7 +83,8 @@ impl PixelForgeApp {
             Err(e) => app.profile_error = Some(format!("{e}")),
         }
 
-        // Probe cluster in background — don't block app launch
+        // Probe cluster in background — desktop only (SSH probes fail on mobile)
+        #[cfg(not(target_os = "android"))]
         {
             let cluster = Arc::clone(&app.cluster);
             let probing = Arc::clone(&app.cluster_probing);
@@ -352,13 +353,12 @@ fn generate_for_display(
     let pal = palette::load_palette(palette_name)?;
     let img_size = 16u32;
 
-    let model_file = tier.model_file();
-    // Fall back if selected model doesn't exist
-    let (actual_tier, actual_file) = if std::path::Path::new(model_file).exists() {
-        (tier, model_file.to_string())
+    let model_path = tier.model_path();
+    let (actual_tier, actual_file) = if model_path.exists() {
+        (tier, model_path.to_string_lossy().to_string())
     } else {
         let fb = device_cap::best_available();
-        (fb, fb.model_file().to_string())
+        (fb, fb.model_path().to_string_lossy().to_string())
     };
 
     let raw_images = match actual_tier {
