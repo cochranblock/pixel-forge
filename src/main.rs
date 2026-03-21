@@ -296,6 +296,63 @@ enum Cmd {
         /// Arguments forwarded to `kova c2 gpu`.
         args: Vec<String>,
     },
+    /// Forge: generate → discriminator gate → PoA sign → Ghost Fabric packet.
+    Forge {
+        /// Class to generate.
+        class: String,
+        /// Number of signed sprites to produce.
+        #[arg(short, long, default_value_t = 1)]
+        count: u32,
+        /// Denoising steps.
+        #[arg(long, default_value_t = 40)]
+        steps: usize,
+        /// Discriminator quality threshold (0.94 ≈ loss < 0.06).
+        #[arg(long, default_value_t = 0.94)]
+        threshold: f32,
+        /// Max generation attempts before giving up.
+        #[arg(long, default_value_t = 50)]
+        max_attempts: u32,
+        /// Path to discriminator model.
+        #[arg(long, default_value = "discriminator.safetensors")]
+        disc: String,
+        /// Palette for color quantization.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output file path.
+        #[arg(short, long, default_value = "forged.png")]
+        output: String,
+        /// GPS latitude (default: Dundalk, MD).
+        #[arg(long, default_value_t = 39.2504)]
+        lat: f32,
+        /// GPS longitude (default: Dundalk, MD).
+        #[arg(long, default_value_t = -76.5205)]
+        lon: f32,
+        /// Use MoE cascade (Cinder → Quench + Experts) instead of auto-detect.
+        #[arg(long)]
+        cascade: bool,
+    },
+    /// Sign an existing sprite with PoA — produce a Ghost Fabric packet.
+    Sign {
+        /// Path to 16x16 PNG sprite.
+        image: String,
+        /// Class of the sprite.
+        #[arg(short, long, default_value = "misc")]
+        class: String,
+        /// Quality score override (0.0-1.0). If omitted, runs discriminator.
+        #[arg(long)]
+        score: Option<f32>,
+        /// Path to discriminator model (used if --score not set).
+        #[arg(long, default_value = "discriminator.safetensors")]
+        disc: String,
+        /// GPS latitude.
+        #[arg(long, default_value_t = 39.2504)]
+        lat: f32,
+        /// GPS longitude.
+        #[arg(long, default_value_t = -76.5205)]
+        lon: f32,
+    },
+    /// Show node public key (for PoA verification).
+    NodeKey,
     /// Plugin mode — JSON request/response for kova integration.
     Plugin {
         /// Keep process alive, read JSON lines continuously.
@@ -867,6 +924,107 @@ fn main() -> anyhow::Result<()> {
             if !status.success() {
                 anyhow::bail!("kova c2 gpu failed");
             }
+        }
+        Cmd::Forge { class, count, steps, threshold, max_attempts, disc, palette: palette_name, output, lat, lon, cascade: use_cascade } => {
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let class_id = class_names.iter()
+                .position(|&n| n == class.to_lowercase())
+                .unwrap_or(14) as u32;
+
+            let pal = palette::load_palette(&palette_name)?;
+            let signing_key = poa::load_or_create_keypair()?;
+
+            println!("forge: class={class} threshold={threshold} cascade={use_cascade}");
+
+            // Generate with quality gate
+            let sprites = if use_cascade {
+                let config = moe::CascadeConfig::default();
+                moe::cascade_with_gate(
+                    "pixel-forge-cinder.safetensors",
+                    "pixel-forge-quench.safetensors",
+                    Some("experts.safetensors"),
+                    &disc, class_id, 16, count, &config, threshold, max_attempts,
+                )?
+            } else {
+                let device = pipeline::best_device();
+                let tier = device_cap::best_available();
+                discriminator::generate_with_gate(
+                    tier, class_id, count, steps, threshold, max_attempts, &disc, &device,
+                )?
+            };
+
+            // Sign each sprite, save images, produce Ghost Fabric packets
+            let device = pipeline::best_device();
+            let mut packet_count = 0usize;
+            let sprite_count = sprites.len();
+            let mut processed = Vec::new();
+
+            for sprite in sprites {
+                let (_dvm, disc_model) = discriminator::load(&disc, &device)?;
+                let (_, score) = discriminator::quality_gate(&disc_model, &sprite, 0.0, &device)?;
+                let packet = poa::sign_artifact(&sprite, class_id, score, lat, lon, &signing_key);
+                assert!(packet.verify(), "PoA self-verification failed");
+                println!("  {}", packet.summary());
+                let wire = packet.to_bytes();
+                println!("  wire: {} bytes (LoRa ready: {})", wire.len(), wire.len() <= 255);
+                packet_count += 1;
+
+                let snapped = grid::snap_to_grid(&sprite, 16);
+                processed.push(palette::quantize(&snapped, &pal));
+            }
+
+            if count == 1 {
+                processed[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&processed, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {output} ({} sprites, {} PoA packets)", sprite_count, packet_count);
+        }
+        Cmd::Sign { image, class, score, disc, lat, lon } => {
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let class_id = class_names.iter()
+                .position(|&n| n == class.to_lowercase())
+                .unwrap_or(14) as u32;
+
+            let img = image::open(&image)?.to_rgba8();
+            let signing_key = poa::load_or_create_keypair()?;
+
+            let quality = if let Some(s) = score {
+                s
+            } else {
+                let device = pipeline::best_device();
+                let (_dvm, disc_model) = discriminator::load(&disc, &device)?;
+                let (_, s) = discriminator::quality_gate(&disc_model, &img, 0.0, &device)?;
+                println!("discriminator score: {:.3}", s);
+                s
+            };
+
+            let packet = poa::sign_artifact(&img, class_id, quality, lat, lon, &signing_key);
+            let wire = packet.to_bytes();
+            println!("{}", packet.summary());
+            println!("verified: {}", packet.verify());
+            println!("wire: {} bytes (LoRa ready: {})", wire.len(), wire.len() <= 255);
+
+            // Write packet to .poa file alongside the image
+            let poa_path = format!("{}.poa", image.trim_end_matches(".png"));
+            std::fs::write(&poa_path, &wire)?;
+            println!("saved: {poa_path}");
+        }
+        Cmd::NodeKey => {
+            let sk = poa::load_or_create_keypair()?;
+            let vk = sk.verifying_key();
+            let pk_hex: String = vk.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
+            println!("node public key: {pk_hex}");
+            println!("key file: ~/.pixel-forge/node.key");
         }
         Cmd::Plugin { r#loop } => {
             if r#loop {

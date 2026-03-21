@@ -136,3 +136,63 @@ pub fn cascade_sample(
 
     Ok(images)
 }
+
+/// MoE cascade with discriminator quality gate.
+/// Rejects sprites where discriminator score < threshold (0.94 ≈ loss < 0.06).
+/// Re-rolls until enough pass or max_attempts exhausted.
+pub fn cascade_with_gate(
+    cinder_path: &str,
+    quench_path: &str,
+    experts_path: Option<&str>,
+    disc_path: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    config: &CascadeConfig,
+    threshold: f32,
+    max_attempts: u32,
+) -> Result<Vec<image::RgbaImage>> {
+    let device = crate::pipeline::best_device();
+
+    // Load discriminator
+    let (_dvm, disc) = crate::discriminator::load(disc_path, &device)?;
+    println!("discriminator loaded, threshold={:.3}", threshold);
+
+    let mut accepted = Vec::new();
+    let mut attempts = 0u32;
+    let batch_size = count.max(4); // generate in batches
+
+    while (accepted.len() as u32) < count && attempts < max_attempts {
+        let need = count - accepted.len() as u32;
+        let batch = need.min(batch_size);
+
+        let sprites = cascade_sample(
+            cinder_path, quench_path, experts_path,
+            class_id, img_size, batch, config,
+        )?;
+
+        for sprite in sprites {
+            let (pass, score) = crate::discriminator::quality_gate(
+                &disc, &sprite, threshold, &device,
+            )?;
+            attempts += 1;
+
+            if pass {
+                println!("  accepted (score={:.3}, attempt={})", score, attempts);
+                accepted.push(sprite);
+                if accepted.len() as u32 >= count { break; }
+            } else {
+                println!("  rejected (score={:.3} < {:.3}, attempt={})", score, threshold, attempts);
+            }
+
+            if attempts >= max_attempts { break; }
+        }
+    }
+
+    if accepted.is_empty() {
+        anyhow::bail!("no sprites passed quality gate after {} attempts (threshold={:.3})", attempts, threshold);
+    }
+
+    println!("cascade gate: {}/{} accepted ({} attempts)", accepted.len(), count, attempts);
+    Ok(accepted)
+}
