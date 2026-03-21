@@ -41,6 +41,36 @@ impl Tier {
         }
     }
 
+    /// Full path to the model file, respecting platform storage.
+    /// On Android, HOME is set to internal_data_path by the entry point.
+    /// On desktop, checks CWD first, then HOME.
+    pub fn model_path(&self) -> PathBuf {
+        let filename = self.model_file();
+        // Check CWD first (desktop dev workflow)
+        let cwd = PathBuf::from(filename);
+        if cwd.exists() {
+            return cwd;
+        }
+        // Check HOME (Android internal storage, or desktop home)
+        if let Ok(home) = std::env::var("HOME") {
+            let home_path = PathBuf::from(home).join(filename);
+            if home_path.exists() {
+                return home_path;
+            }
+        }
+        // Check next to the binary
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let exe_path = dir.join(filename);
+                if exe_path.exists() {
+                    return exe_path;
+                }
+            }
+        }
+        // Fall back to bare filename (will error at load time)
+        PathBuf::from(filename)
+    }
+
     pub fn param_count(&self) -> u64 {
         match self {
             Tier::Cinder => 1_090_000,
@@ -278,8 +308,8 @@ const MAX_STEP_MS: f64 = 50.0;
 /// Pick tier based on benchmarks and available models.
 fn select_tier(cinder_ms: f64, quench_ms: Option<f64>, ram_mb: u64) -> Tier {
     // Check what model files exist
-    let anvil_exists = std::path::Path::new(Tier::Anvil.model_file()).exists();
-    let quench_exists = std::path::Path::new(Tier::Quench.model_file()).exists();
+    let anvil_exists = Tier::Anvil.model_path().exists();
+    let quench_exists = Tier::Quench.model_path().exists();
 
     // RAM gate: need at least 2GB for Quench, 3GB for Anvil
     let ram_ok_quench = ram_mb >= 2048;
@@ -387,10 +417,7 @@ pub fn auto_sample(
     steps: usize,
 ) -> Result<Vec<image::RgbaImage>> {
     let profile = auto_select()?;
-    let model_file = profile.tier.model_file();
-
-    if !std::path::Path::new(model_file).exists() {
-        // Fall back to best available
+    if !profile.tier.model_path().exists() {
         let fallback = best_available_tier();
         println!("  {} not found, falling back to {}", profile.tier, fallback);
         return sample_tier(fallback, class_id, img_size, count, steps);
@@ -406,11 +433,11 @@ pub fn best_available() -> Tier {
 
 fn best_available_tier() -> Tier {
     for tier in [Tier::Anvil, Tier::Quench, Tier::Cinder] {
-        if std::path::Path::new(tier.model_file()).exists() {
+        if tier.model_path().exists() {
             return tier;
         }
     }
-    Tier::Cinder // default even if missing — will error at load time
+    Tier::Cinder
 }
 
 /// Sample with a specific tier.
@@ -422,10 +449,10 @@ fn sample_tier(
     steps: usize,
 ) -> Result<Vec<image::RgbaImage>> {
     match tier {
-        Tier::Cinder => crate::train::sample(tier.model_file(), class_id, img_size, count, steps),
-        Tier::Quench => crate::train::sample_medium(tier.model_file(), class_id, img_size, count, steps),
+        Tier::Cinder => crate::train::sample(&tier.model_path().to_string_lossy(), class_id, img_size, count, steps),
+        Tier::Quench => crate::train::sample_medium(&tier.model_path().to_string_lossy(), class_id, img_size, count, steps),
         Tier::Anvil => {
-            crate::train::sample_anvil(tier.model_file(), class_id, img_size, count, steps)
+            crate::train::sample_anvil(&tier.model_path().to_string_lossy(), class_id, img_size, count, steps)
         }
     }
 }

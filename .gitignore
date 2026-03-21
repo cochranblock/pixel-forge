@@ -1,4 +1,9 @@
 pixel-forge-*.safetensors*
 output/
+target/
 android/target/
 android/Cargo.lock
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/jniLibs/
