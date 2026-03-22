@@ -91,22 +91,26 @@ pub fn cascade_sample(
     let mut images = Vec::new();
 
     for i in 0..count {
-        // Start from noise
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        // Start from noise in Cinder's dtype
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
+            .to_dtype(cinder_dtype)?;
 
         // Phase 1: Cinder draft (fast, rough shape)
         for step in 0..config.cinder_steps {
             let noise_level = 1.0 - (step as f32 / total_steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            let t = Tensor::new(&[noise_level], &device)?.to_dtype(cinder_dtype)?;
             let pred = cinder.forward(&x, &t, &class_tensor)?;
             let mix = 1.0 / (total_steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
+        // Handoff: cast to Quench dtype if different
+        x = x.to_dtype(quench_dtype)?;
+
         // Phase 2: Quench + Experts (encode → correct → decode)
         for step in config.cinder_steps..total_steps {
             let noise_level = 1.0 - (step as f32 / total_steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            let t = Tensor::new(&[noise_level], &device)?.to_dtype(quench_dtype)?;
 
             // Encode
             let (mut features, skips, t_emb) = quench.encode(&x, &t, &class_tensor)?;
@@ -123,8 +127,8 @@ pub fn cascade_sample(
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        // To image
-        let x = x.clamp(0.0, 1.0)?;
+        // To image (cast back to f32 for conversion)
+        let x = x.to_dtype(DType::F32)?.clamp(0.0, 1.0)?;
         let x = (x * 255.0)?.to_dtype(DType::U8)?;
         let x = x.squeeze(0)?.permute((1, 2, 0))?;
         let pixels = x.flatten_all()?.to_vec1::<u8>()?;

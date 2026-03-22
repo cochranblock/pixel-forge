@@ -654,17 +654,19 @@ pub fn sample(
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
+            .to_dtype(dtype)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            let t = Tensor::new(&[noise_level], &device)?.to_dtype(dtype)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        images.push(tensor_to_rgba(&x, img_size)?);
+        // Cast back to f32 for image conversion
+        images.push(tensor_to_rgba(&x.to_dtype(DType::F32)?, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -705,17 +707,18 @@ pub fn sample_medium(
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
+            .to_dtype(dtype)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            let t = Tensor::new(&[noise_level], &device)?.to_dtype(dtype)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        images.push(tensor_to_rgba(&x, img_size)?);
+        images.push(tensor_to_rgba(&x.to_dtype(DType::F32)?, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -749,17 +752,18 @@ pub fn sample_anvil(
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
+            .to_dtype(dtype)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            let t = Tensor::new(&[noise_level], &device)?.to_dtype(dtype)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        images.push(tensor_to_rgba(&x, img_size)?);
+        images.push(tensor_to_rgba(&x.to_dtype(DType::F32)?, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
