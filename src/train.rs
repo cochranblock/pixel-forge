@@ -621,6 +621,7 @@ fn tensor_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
 }
 
 /// Sample from a trained TinyUNet (Cinder) with CFG.
+/// Auto-detects f16 vs f32 weights from the safetensors header.
 pub fn sample(
     model_path: &str,
     class_id: u32,
@@ -629,9 +630,10 @@ pub fn sample(
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
-    let dtype = DType::F32;
+    let dtype = crate::quantize::candle_dtype_for(model_path);
 
-    println!("loading model from {model_path}...");
+    let dtype_label = if dtype == DType::F16 { "f16" } else { "f32" };
+    println!("loading model from {model_path} ({dtype_label})...");
     let n_classes = detect_class_count(model_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let has_null_class = n_classes > 15; // 16+ means index 15 is the null/unconditional class
     let mut varmap = VarMap::new();
@@ -670,6 +672,7 @@ pub fn sample(
 }
 
 /// Sample from a trained MediumUNet (Quench) with CFG.
+/// Auto-detects f16 vs f32 weights from the safetensors header.
 pub fn sample_medium(
     model_path: &str,
     class_id: u32,
@@ -678,9 +681,10 @@ pub fn sample_medium(
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
-    let dtype = DType::F32;
+    let dtype = crate::quantize::candle_dtype_for(model_path);
 
-    println!("loading Quench model from {model_path}...");
+    let dtype_label = if dtype == DType::F16 { "f16" } else { "f32" };
+    println!("loading Quench model from {model_path} ({dtype_label})...");
     let n_classes = detect_class_count(model_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let has_null_class = n_classes > 15;
     let mut varmap = VarMap::new();
@@ -719,6 +723,7 @@ pub fn sample_medium(
 }
 
 /// Sample from a trained AnvilUNet with CFG.
+/// Auto-detects f16 vs f32 weights from the safetensors header.
 pub fn sample_anvil(
     model_path: &str,
     class_id: u32,
@@ -727,9 +732,10 @@ pub fn sample_anvil(
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
-    let dtype = DType::F32;
+    let dtype = crate::quantize::candle_dtype_for(model_path);
 
-    println!("loading Anvil model from {model_path}...");
+    let dtype_label = if dtype == DType::F16 { "f16" } else { "f32" };
+    println!("loading Anvil model from {model_path} ({dtype_label})...");
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
     let model = AnvilUNet::new(vb)?;

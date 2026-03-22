@@ -4024,6 +4024,7 @@ dependencies = [
  "ed25519-dalek",
  "eframe",
  "egui",
+ "half",
  "hf-hub",
  "image",
  "rand 0.8.5",

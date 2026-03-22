@@ -80,6 +80,9 @@ enum Cmd {
         /// Use AnvilUNet (~16M params) — the XL model.
         #[arg(long)]
         anvil: bool,
+        /// Disable EMA (saves ~50% RAM during training).
+        #[arg(long)]
+        no_ema: bool,
     },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
@@ -359,6 +362,14 @@ enum Cmd {
         #[arg(long)]
         r#loop: bool,
     },
+    /// Quantize a model from f32 to f16 (halves file size + faster on ARM/Metal).
+    Quantize {
+        /// Input model file (f32 safetensors).
+        input: String,
+        /// Output file. Defaults to input-f16.safetensors.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
     /// MoE cascade: Cinder drafts → Quench + Experts refines.
     Cascade {
         /// Class to generate.
@@ -470,6 +481,7 @@ fn main() -> anyhow::Result<()> {
             img_size,
             medium,
             anvil,
+            no_ema,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -480,6 +492,7 @@ fn main() -> anyhow::Result<()> {
                 img_size,
                 medium,
                 anvil,
+                ema: !no_ema,
                 ..Default::default()
             };
             train::train(&config)?;
@@ -1035,6 +1048,16 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::TrainExperts { quench, data, output, epochs, batch_size } => {
             expert_train::train_experts(&quench, &data, &output, epochs, batch_size)?;
+        }
+        Cmd::Quantize { input, output } => {
+            let out = if let Some(o) = output {
+                let size = quantize::quantize_f32_to_f16(&input, &o)?;
+                println!("wrote {} ({:.1} MB)", o, size as f64 / 1_048_576.0);
+                o
+            } else {
+                quantize::quantize_in_place(&input)?
+            };
+            println!("done: {out}");
         }
         Cmd::Cascade { class, cinder, quench, experts, count, cinder_steps, quench_steps, palette: palette_name, output } => {
             let class_names = [
