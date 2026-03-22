@@ -62,9 +62,9 @@ def render_icon(size):
             dist = math.sqrt(cx*cx + cy*cy)
             glow = max(0, 1.0 - dist * 2.8) ** 2
             r, g, b, a = get(x, y)
-            r = min(255, int(r + glow * 200))
-            g = min(255, int(g + glow * 55))
-            b = min(255, int(b + glow * 8))
+            r = min(255, int(r + glow * 5))
+            g = min(255, int(g + glow * 140))
+            b = min(255, int(b + glow * 200))
             put(x, y, r, g, b)
 
     # Helper: filled rect
@@ -112,10 +112,10 @@ def render_icon(size):
     fill_rect(0.42, 0.13, 0.18, 0.07, hammer_steel)
     fill_rect(0.43, 0.12, 0.16, 0.02, (130, 135, 145))  # highlight top
 
-    # Sparks
-    orange = (255, 102, 0)
-    yellow = (255, 180, 50)
-    white_hot = (255, 240, 200)
+    # Sparks — cochranblock cyber blue
+    orange = (0, 217, 255)       # #00d9ff accent
+    yellow = (100, 230, 255)     # bright cyan
+    white_hot = (200, 245, 255)  # white-blue
 
     sparks = [
         (0.38, 0.32, 0), (0.42, 0.26, 1), (0.50, 0.24, 2),
@@ -145,8 +145,9 @@ def render_icon(size):
                         intensity = max(0, 1.0 - d / (glow_r + 1)) * 0.3
                         gx, gy = px0 + dx, py0 + dy
                         r, g, b, a = get(gx, gy)
-                        r = min(255, int(r + intensity * color[0]))
-                        g = min(255, int(g + intensity * color[1] * 0.3))
+                        r = min(255, int(r + intensity * color[0] * 0.2))
+                        g = min(255, int(g + intensity * color[1] * 0.5))
+                        b = min(255, int(b + intensity * color[2] * 0.5))
                         put(gx, gy, r, g, b)
 
     # "PF" monogram — pixel art block letters
@@ -193,8 +194,8 @@ def render_icon(size):
             if 0.43 < dist < 0.49:
                 rim = min(1.0, (0.49 - dist) / 0.06) * 0.25
                 r, g, b, a = get(x, y)
-                r = min(255, int(r + rim * 255))
-                g = min(255, int(g + rim * 50))
+                g = min(255, int(g + rim * 180))
+                b = min(255, int(b + rim * 255))
                 put(x, y, r, g, b)
 
     return pixels
