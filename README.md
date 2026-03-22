@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/pixel-forge-logo.jpg" alt="Pixel Forge" width="400">
+  <img src="assets/store/play-store-icon.png" alt="Pixel Forge" width="192">
 </p>
 
 # Pixel Forge v0.5.0
@@ -10,15 +10,16 @@ Generate game-ready pixel art sprites from tiny diffusion models that fit in a m
 
 ## What It Does
 
-- **Generate** pixel art sprites from 15 classes (character, weapon, terrain, enemy, etc.)
+- **Generate** pixel art sprites from 16 classes (character, weapon, terrain, enemy, etc.)
 - **Train** your own models on curated artist-made pixel art datasets
 - **Three tiers** — Cinder (4.2 MB, fast), Quench (22 MB, balanced), Anvil (64 MB, highest quality)
+- **f16 quantization** — halve model size for mobile (Cinder: 2.1 MB, Quench: 11 MB)
 - **MoE cascade** — Cinder drafts, Quench + 4 expert heads refine. Better than either alone.
 - **Judge model** — binary quality classifier filters bad sprites automatically
 - **LoRA adapters** — fine-tune from user feedback without retraining
 - **Scene generation** — 8x8 biome grids with rule-based or model-based placement
 - **Cluster distribution** — fan out generation across GPU nodes
-- **GUI** — no-args launches a desktop app with device auto-detection
+- **GUI + Android app** — touch-friendly, device auto-detection, Cinder-only APK under 10 MB
 
 ## Architecture
 
@@ -70,12 +71,14 @@ cargo run --release
 | `train` | Train tiny/medium/XL model from dataset |
 | `cascade <class>` | MoE cascade: Cinder → Quench + Experts |
 | `auto <class>` | Auto-detect GPU, pick best model |
+| `quantize <model>` | Convert f32 → f16 (halves file size) |
 | `train-experts` | Train 4 expert heads on frozen Quench |
 | `train-judge` | Train quality classifier from swipe data |
 | `train-lora` | Fine-tune generator from Judge feedback |
 | `train-combiner` | Train scene layout model |
 | `scene <mode>` | Generate 8x8 biome grids |
 | `pipeline` | Full pipeline: generate → judge → combine → render |
+| `forge <class>` | Generate → discriminator gate → PoA sign |
 | `curate` | Slice sprite sheets into training tiles |
 | `swipe <image> <verdict>` | Record good/bad judgments |
 | `judge <input>` | Score sprite quality |
@@ -91,9 +94,9 @@ cargo run --release
 
 | Tier | Name | Params | Size | Channels | Use Case |
 |------|------|--------|------|----------|----------|
-| Tiny | **Cinder** | 1.09M | 4.2 MB | [32, 64, 64] | Fast draft, mobile |
-| Medium | **Quench** | 5.83M | 22 MB | [64, 128, 128] + self-attention | Balanced quality/speed |
-| XL | **Anvil** | 16.9M | 64 MB | 3-level, deeper ResBlocks | Highest quality, desktop |
+| Tiny | **Cinder** | 1.09M | 4.2 MB (2.1 f16) | [32, 64, 64] | Fast draft, mobile |
+| Medium | **Quench** | 5.83M | 22 MB (11 f16) | [64, 128, 128] + self-attention | Balanced quality/speed |
+| XL | **Anvil** | 16.9M | 64 MB (32 f16) | 3-level, deeper ResBlocks | Highest quality, desktop |
 
 ### Expert Heads (MoE)
 
@@ -150,7 +153,7 @@ See [data/SOURCES.md](data/SOURCES.md) for full attribution.
 | CLI | clap |
 | GPU Scheduling | kova c2 gpu (file-based lock + priority queue) |
 
-Zero Python. Zero JavaScript. One language. 7,824 lines of Rust.
+Zero Python. Zero JavaScript. One language. 9,162 lines of Rust.
 
 ## Attribution
 

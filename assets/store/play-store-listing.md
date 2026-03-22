@@ -12,13 +12,14 @@ Pixel Forge generates pixel art game assets using AI models that run entirely on
 Pick a sprite class, choose a color palette, tap Generate. Done.
 
 WHAT YOU GET:
-- 15 sprite classes: characters, weapons, potions, terrain, enemies, trees, buildings, animals, effects, food, armor, tools, vehicles, UI elements, and more
+- 16 sprite classes: characters, weapons, potions, terrain, enemies, trees, buildings, animals, effects, food, armor, tools, vehicles, UI elements, and more
 - 7 color palettes: Stardew Valley, Starbound, SNES, NES, Game Boy, PICO-8, Endesga
 - Automatic device detection picks the best AI model for your hardware
+- Swipe review — rate sprites to train the quality filter
 - Results in seconds — no waiting for cloud servers
 
 HOW IT WORKS:
-Pixel Forge uses a tiny diffusion model (under 5MB) trained on CC0/CC-BY pixel art. The AI runs a denoising process directly on your phone's processor. Every sprite is unique — generated fresh each time.
+Pixel Forge uses a tiny diffusion model (under 3MB with f16 quantization) trained on CC0/CC-BY pixel art. The AI runs a denoising process directly on your phone's processor. Every sprite is unique — generated fresh each time.
 
 The model was trained using the Candle ML framework in Rust. No Python. No TensorFlow. No PyTorch. Pure Rust, compiled to native ARM64.
 
