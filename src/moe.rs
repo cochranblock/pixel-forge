@@ -47,22 +47,25 @@ pub fn cascade_sample(
     config: &CascadeConfig,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
-    let dtype = DType::F32;
     let total_steps = config.cinder_steps + config.quench_steps;
 
-    // Load Cinder
-    println!("loading Cinder from {cinder_path}...");
+    // Load Cinder (auto-detect f16/f32)
+    let cinder_dtype = crate::quantize::candle_dtype_for(cinder_path);
+    println!("loading Cinder from {cinder_path} ({})...",
+        if cinder_dtype == DType::F16 { "f16" } else { "f32" });
     let cinder_classes = crate::train::detect_class_count_pub(cinder_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let mut cinder_vm = VarMap::new();
-    let cinder_vb = VarBuilder::from_varmap(&cinder_vm, dtype, &device);
+    let cinder_vb = VarBuilder::from_varmap(&cinder_vm, cinder_dtype, &device);
     let cinder = TinyUNet::with_classes(cinder_vb, cinder_classes)?;
     cinder_vm.load(cinder_path)?;
 
-    // Load Quench
-    println!("loading Quench from {quench_path}...");
+    // Load Quench (auto-detect f16/f32)
+    let quench_dtype = crate::quantize::candle_dtype_for(quench_path);
+    println!("loading Quench from {quench_path} ({})...",
+        if quench_dtype == DType::F16 { "f16" } else { "f32" });
     let quench_classes = crate::train::detect_class_count_pub(quench_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let mut quench_vm = VarMap::new();
-    let quench_vb = VarBuilder::from_varmap(&quench_vm, dtype, &device);
+    let quench_vb = VarBuilder::from_varmap(&quench_vm, quench_dtype, &device);
     let quench = MediumUNet::with_classes(quench_vb, quench_classes)?;
     quench_vm.load(quench_path)?;
 

@@ -32,3 +32,4 @@ pub mod plugin;
 pub mod app;
 pub mod gpu_lock;
 pub mod poa;
+pub mod quantize;

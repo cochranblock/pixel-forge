@@ -184,7 +184,13 @@ impl PixelForgeApp {
             } else {
                 match mode {
                     GenMode::Cascade => {
-                        cascade_for_display(class_id, count, steps, &palette_name)
+                        // Fall back to Cinder-only if Quench not available (mobile APK)
+                        let quench_path = device_cap::Tier::Quench.model_path();
+                        if quench_path.exists() {
+                            cascade_for_display(class_id, count, steps, &palette_name)
+                        } else {
+                            generate_for_display(device_cap::Tier::Cinder, class_id, count, steps, &palette_name)
+                        }
                     }
                     GenMode::Quench => {
                         generate_for_display(device_cap::Tier::Quench, class_id, count, steps, &palette_name)
