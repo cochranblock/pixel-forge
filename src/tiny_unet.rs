@@ -154,6 +154,10 @@ pub struct TinyUNet {
 
 impl TinyUNet {
     pub fn new(vb: VarBuilder) -> Result<Self> {
+        Self::with_classes(vb, NUM_CLASSES)
+    }
+
+    pub fn with_classes(vb: VarBuilder, n_classes: usize) -> Result<Self> {
         let conv_in = nn::conv2d(3, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
 
         // Time embedding: scalar → TIME_DIM → TIME_DIM
@@ -161,7 +165,7 @@ impl TinyUNet {
         let time_mlp2 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp2"))?;
 
         // Class conditioning — learned embedding per class
-        let class_emb = nn::embedding(NUM_CLASSES, TIME_DIM, vb.pp("class_emb"))?;
+        let class_emb = nn::embedding(n_classes, TIME_DIM, vb.pp("class_emb"))?;
 
         // Encoder: 3 levels
         let mut down_blocks = Vec::new();

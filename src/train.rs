@@ -20,6 +20,18 @@ use crate::tiny_unet::TinyUNet;
 use crate::medium_unet::MediumUNet;
 use crate::anvil_unet::AnvilUNet;
 
+/// Detect class count from a safetensors file by reading class_emb.weight shape.
+fn detect_class_count(path: &str) -> Option<usize> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 8 { return None; }
+    let header_len = u64::from_le_bytes(data[..8].try_into().ok()?) as usize;
+    let header_str = std::str::from_utf8(data.get(8..8 + header_len)?).ok()?;
+    // Parse just enough to find class_emb.weight shape
+    let header: serde_json::Value = serde_json::from_str(header_str).ok()?;
+    let shape = header.get("class_emb.weight")?.get("shape")?.as_array()?;
+    shape.first()?.as_u64().map(|n| n as usize)
+}
+
 /// Training config.
 pub struct TrainConfig {
     pub data_dir: String,
@@ -615,9 +627,10 @@ pub fn sample(
     let dtype = DType::F32;
 
     println!("loading model from {model_path}...");
+    let n_classes = detect_class_count(model_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
-    let model = TinyUNet::new(vb)?;
+    let model = TinyUNet::with_classes(vb, n_classes)?;
     varmap.load(model_path)?;
 
     let params = TinyUNet::param_count(&varmap);
