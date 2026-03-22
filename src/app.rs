@@ -165,7 +165,7 @@ impl PixelForgeApp {
         } else {
             None
         };
-        let local_profile = self.profile.clone();
+        let _local_profile = self.profile.clone();
 
         {
             let mut s = state.lock().unwrap();
@@ -253,7 +253,7 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER_DIM);
     visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT_DIM);
     // Slider track
-    visuals.widgets.inactive.rounding = egui::Rounding::same(4);
+    visuals.widgets.inactive.rounding = egui::CornerRadius::same(4);
     ctx.set_visuals(visuals);
 }
 
@@ -267,7 +267,7 @@ fn styled_button(ui: &mut egui::Ui, label: &str, selected: bool, min_size: egui:
         egui::RichText::new(label).color(fg).size(14.0)
     )
         .fill(bg)
-        .rounding(egui::Rounding::same(6))
+        .corner_radius(egui::CornerRadius::same(6))
         .min_size(min_size);
     ui.add(btn).clicked()
 }
@@ -344,7 +344,7 @@ impl eframe::App for PixelForgeApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let kb_btn = egui::Button::new(
                             egui::RichText::new("KB").size(12.0).color(TEXT_BRIGHT)
-                        ).fill(BTN_BG).rounding(egui::Rounding::same(4)).min_size(egui::vec2(36.0, 24.0));
+                        ).fill(BTN_BG).corner_radius(egui::CornerRadius::same(4)).min_size(egui::vec2(36.0, 24.0));
                         if ui.add(kb_btn).clicked() {
                             self.keyboard_requested = !self.keyboard_requested;
                         }
@@ -477,7 +477,7 @@ impl eframe::App for PixelForgeApp {
                 )
                     .fill(btn_color)
                     .stroke(egui::Stroke::new(if can_generate { 2.0 } else { 0.0 }, ACCENT_DIM))
-                    .rounding(egui::Rounding::same(14))
+                    .corner_radius(egui::CornerRadius::same(14))
                     .min_size(egui::vec2(300.0, 60.0));
 
                 let response = ui.add_enabled(can_generate, btn);
@@ -537,7 +537,7 @@ impl eframe::App for PixelForgeApp {
                         let size = egui::vec2(available, available * aspect);
                         ui.add(
                             egui::Image::new(egui::load::SizedTexture::new(tex.id(), size))
-                                .rounding(egui::Rounding::same(8))
+                                .corner_radius(egui::CornerRadius::same(8))
                         );
                     });
 
@@ -603,7 +603,7 @@ impl eframe::App for PixelForgeApp {
                             let display_size = egui::vec2(256.0, 256.0);
                             ui.add(
                                 egui::Image::new(egui::load::SizedTexture::new(tex.id(), display_size))
-                                    .rounding(egui::Rounding::same(8))
+                                    .corner_radius(egui::CornerRadius::same(8))
                             );
                         }
 
@@ -617,7 +617,7 @@ impl eframe::App for PixelForgeApp {
                                 egui::RichText::new("NOPE").size(18.0).color(egui::Color32::WHITE).strong()
                             )
                                 .fill(egui::Color32::from_rgb(200, 50, 50))
-                                .rounding(egui::Rounding::same(12))
+                                .corner_radius(egui::CornerRadius::same(12))
                                 .min_size(egui::vec2(120.0, 50.0));
                             if ui.add(bad_btn).clicked() {
                                 self.swipe_store.record(pixels_f32.clone(), false, class_id);
@@ -632,7 +632,7 @@ impl eframe::App for PixelForgeApp {
                                 egui::RichText::new("KEEP").size(18.0).color(egui::Color32::WHITE).strong()
                             )
                                 .fill(egui::Color32::from_rgb(50, 180, 50))
-                                .rounding(egui::Rounding::same(12))
+                                .corner_radius(egui::CornerRadius::same(12))
                                 .min_size(egui::vec2(120.0, 50.0));
                             if ui.add(good_btn).clicked() {
                                 self.swipe_store.record(pixels_f32.clone(), true, class_id);

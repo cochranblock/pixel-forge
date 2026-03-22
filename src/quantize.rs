@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
+
 
 /// Read a safetensors file header and return (header_json, raw_data).
 fn read_safetensors(path: &str) -> Result<(serde_json::Value, Vec<u8>)> {
@@ -150,7 +150,7 @@ pub fn is_f16(path: &str) -> bool {
 }
 
 /// Return the candle DType matching a safetensors file.
-pub fn candle_dtype_for(path: &str) -> candle_core::DType {
+pub fn candle_dtype_for(_path: &str) -> candle_core::DType {
     // Always compute in f32 — f16 is for storage only.
     // On CPU, f16 compute is slow (no NEON in candle).
     // On Metal, the cast overhead is negligible vs download savings.
