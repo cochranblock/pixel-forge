@@ -52,16 +52,18 @@ pub fn cascade_sample(
 
     // Load Cinder
     println!("loading Cinder from {cinder_path}...");
+    let cinder_classes = crate::train::detect_class_count_pub(cinder_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let mut cinder_vm = VarMap::new();
     let cinder_vb = VarBuilder::from_varmap(&cinder_vm, dtype, &device);
-    let cinder = TinyUNet::new(cinder_vb)?;
+    let cinder = TinyUNet::with_classes(cinder_vb, cinder_classes)?;
     cinder_vm.load(cinder_path)?;
 
     // Load Quench
     println!("loading Quench from {quench_path}...");
+    let quench_classes = crate::train::detect_class_count_pub(quench_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let mut quench_vm = VarMap::new();
     let quench_vb = VarBuilder::from_varmap(&quench_vm, dtype, &device);
-    let quench = MediumUNet::new(quench_vb)?;
+    let quench = MediumUNet::with_classes(quench_vb, quench_classes)?;
     quench_vm.load(quench_path)?;
 
     // Load experts (optional — works without them, just no correction)
@@ -81,7 +83,8 @@ pub fn cascade_sample(
     println!("cascade: {} Cinder steps → {} Quench+Expert steps = {} total",
         config.cinder_steps, config.quench_steps, total_steps);
 
-    let class_tensor = Tensor::new(&[class_id], &device)?;
+    let max_class = (cinder_classes.min(quench_classes) - 1) as u32;
+    let class_tensor = Tensor::new(&[class_id.min(max_class)], &device)?;
     let mut images = Vec::new();
 
     for i in 0..count {

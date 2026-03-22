@@ -21,6 +21,11 @@ use crate::medium_unet::MediumUNet;
 use crate::anvil_unet::AnvilUNet;
 
 /// Detect class count from a safetensors file by reading class_emb.weight shape.
+/// Public alias for cross-module use.
+pub fn detect_class_count_pub(path: &str) -> Option<usize> {
+    detect_class_count(path)
+}
+
 fn detect_class_count(path: &str) -> Option<usize> {
     let data = std::fs::read(path).ok()?;
     if data.len() < 8 { return None; }
@@ -676,16 +681,23 @@ pub fn sample_medium(
     let dtype = DType::F32;
 
     println!("loading Quench model from {model_path}...");
+    let n_classes = detect_class_count(model_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
+    let has_null_class = n_classes > 15;
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
-    let model = MediumUNet::new(vb)?;
+    let model = MediumUNet::with_classes(vb, n_classes)?;
     varmap.load(model_path)?;
 
+    let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
     let params = MediumUNet::param_count(&varmap);
-    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}", params, count, DEFAULT_CFG_SCALE);
+    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}", params, count, cfg_scale);
 
-    let class_tensor = Tensor::new(&[class_id], &device)?;
-    let null_class = Tensor::new(&[CFG_NULL_CLASS], &device)?;
+    let class_tensor = Tensor::new(&[class_id.min((n_classes - 1) as u32)], &device)?;
+    let null_class = if has_null_class {
+        Tensor::new(&[CFG_NULL_CLASS], &device)?
+    } else {
+        Tensor::new(&[0u32], &device)?
+    };
 
     let mut images = Vec::new();
     for i in 0..count {
@@ -694,7 +706,7 @@ pub fn sample_medium(
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
             let t = Tensor::new(&[noise_level], &device)?;
-            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
+            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
