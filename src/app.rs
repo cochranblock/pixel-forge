@@ -25,10 +25,39 @@ const PALETTE_NAMES: &[&str] = &[
 /// App state shared between UI and generation thread.
 struct GenerationState {
     status: String,
-    result_pixels: Option<Vec<u8>>, // RGBA pixels for display
+    result_pixels: Option<Vec<u8>>, // RGBA pixels for display (sheet)
     result_width: u32,
     result_height: u32,
     generating: bool,
+    /// Individual sprites for swipe review (raw f32 pixels, 16x16x3).
+    individual_sprites: Vec<Vec<f32>>,
+    /// Class IDs for each individual sprite.
+    sprite_class_ids: Vec<u32>,
+}
+
+/// Generation mode — which model pipeline to use.
+#[derive(Clone, Copy, PartialEq)]
+pub enum GenMode {
+    Cinder,   // m0 — fast, small
+    Quench,   // m1 — better quality
+    Cascade,  // m0→m1 MoE — best quality
+}
+
+impl GenMode {
+    fn label(&self) -> &'static str {
+        match self {
+            GenMode::Cinder => "Cinder",
+            GenMode::Quench => "Quench",
+            GenMode::Cascade => "Cascade",
+        }
+    }
+    fn desc(&self) -> &'static str {
+        match self {
+            GenMode::Cinder => "fast, 1M params",
+            GenMode::Quench => "quality, 6M params",
+            GenMode::Cascade => "MoE: Cinder drafts, Quench refines",
+        }
+    }
 }
 
 pub struct PixelForgeApp {
@@ -40,12 +69,19 @@ pub struct PixelForgeApp {
     selected_class: usize,
     selected_palette: usize,
     prompt_text: String,
+    gen_mode: GenMode,
     gen_count: u32,
     gen_steps: usize,
     gen_state: Arc<Mutex<GenerationState>>,
     texture: Option<egui::TextureHandle>,
     texture_version: u64,
     last_rendered_version: u64,
+    // Swipe review state
+    swipe_store: crate::swipe_store::SwipeStore,
+    swipe_index: usize,         // which sprite we're reviewing
+    swipe_texture: Option<egui::TextureHandle>,
+    reviewing: bool,            // true = in swipe mode
+    lora_training: Arc<Mutex<bool>>,
 }
 
 impl Default for PixelForgeApp {
@@ -59,6 +95,7 @@ impl Default for PixelForgeApp {
             selected_class: 0, // character
             selected_palette: 0, // stardew
             prompt_text: String::new(),
+            gen_mode: GenMode::Cascade,
             gen_count: 4,
             gen_steps: 40,
             gen_state: Arc::new(Mutex::new(GenerationState {
@@ -67,10 +104,17 @@ impl Default for PixelForgeApp {
                 result_width: 0,
                 result_height: 0,
                 generating: false,
+                individual_sprites: Vec::new(),
+                sprite_class_ids: Vec::new(),
             })),
             texture: None,
             texture_version: 0,
             last_rendered_version: 0,
+            swipe_store: crate::swipe_store::SwipeStore::load_or_default("swipes.bin", 200),
+            swipe_index: 0,
+            swipe_texture: None,
+            reviewing: false,
+            lora_training: Arc::new(Mutex::new(false)),
         }
     }
 }
@@ -109,6 +153,7 @@ impl PixelForgeApp {
         let palette_name = PALETTE_NAMES[self.selected_palette].to_string();
         let count = self.gen_count;
         let steps = self.gen_steps;
+        let mode = self.gen_mode;
         let state = Arc::clone(&self.gen_state);
         let ctx = ctx.clone();
 
@@ -123,24 +168,25 @@ impl PixelForgeApp {
             let mut s = state.lock().unwrap();
             s.generating = true;
             s.result_pixels = None;
-            if cluster_state.is_some() {
-                let active = cluster_state.as_ref().unwrap().active_nodes().len();
-                s.status = format!("forging {} {}s across {} nodes...", count, class_name, active);
-            } else {
-                let tier = local_profile.as_ref().map(|p| p.tier.to_string()).unwrap_or("?".into());
-                s.status = format!("generating {} {}s with {}...", count, class_name, tier);
-            }
+            s.status = format!("generating {} {}s with {}...", count, class_name, mode.label());
         }
 
         std::thread::spawn(move || {
+            let class_id = class_name_to_id(&class_name);
             let result = if let Some(ref cluster) = cluster_state {
-                // Cluster mode: distribute across all nodes
                 cluster_generate_for_display(&class_name, count, steps, &palette_name, cluster)
-            } else if let Some(ref profile) = local_profile {
-                // Local only
-                generate_for_display(profile.tier, class_name_to_id(&class_name), count, steps, &palette_name)
             } else {
-                Err(anyhow::anyhow!("no device profile"))
+                match mode {
+                    GenMode::Cascade => {
+                        cascade_for_display(class_id, count, steps, &palette_name)
+                    }
+                    GenMode::Quench => {
+                        generate_for_display(device_cap::Tier::Quench, class_id, count, steps, &palette_name)
+                    }
+                    GenMode::Cinder => {
+                        generate_for_display(device_cap::Tier::Cinder, class_id, count, steps, &palette_name)
+                    }
+                }
             };
 
             let mut s = state.lock().unwrap();
@@ -335,6 +381,25 @@ impl eframe::App for PixelForgeApp {
 
             ui.add_space(8.0);
 
+            // Model mode selector
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                section_label(ui, "MODEL");
+                ui.horizontal(|ui| {
+                    for mode in [GenMode::Cinder, GenMode::Quench, GenMode::Cascade] {
+                        let selected = self.gen_mode == mode;
+                        if styled_button(ui, mode.label(), selected, egui::vec2(80.0, 32.0)) {
+                            self.gen_mode = mode;
+                        }
+                    }
+                });
+                ui.label(egui::RichText::new(self.gen_mode.desc()).size(10.0).color(
+                    egui::Color32::from_rgb(80, 80, 100)
+                ));
+            });
+
+            ui.add_space(8.0);
+
             // Controls
             ui.group(|ui| {
                 ui.set_width(ui.available_width());
@@ -424,16 +489,160 @@ impl eframe::App for PixelForgeApp {
                 }
             }
 
-            if let Some(ref tex) = self.texture {
-                ui.vertical_centered(|ui| {
-                    let available = ui.available_width().min(360.0);
-                    let aspect = tex.size_vec2().y / tex.size_vec2().x;
-                    let size = egui::vec2(available, available * aspect);
-                    ui.add(
-                        egui::Image::new(egui::load::SizedTexture::new(tex.id(), size))
-                            .rounding(egui::Rounding::same(8))
-                    );
-                });
+            if !self.reviewing {
+                // Show sheet result
+                if let Some(ref tex) = self.texture {
+                    ui.vertical_centered(|ui| {
+                        let available = ui.available_width().min(360.0);
+                        let aspect = tex.size_vec2().y / tex.size_vec2().x;
+                        let size = egui::vec2(available, available * aspect);
+                        ui.add(
+                            egui::Image::new(egui::load::SizedTexture::new(tex.id(), size))
+                                .rounding(egui::Rounding::same(8))
+                        );
+                    });
+
+                    // Review button — starts swipe mode
+                    let has_sprites = {
+                        let s = self.gen_state.lock().unwrap();
+                        !s.individual_sprites.is_empty()
+                    };
+                    if has_sprites {
+                        ui.add_space(8.0);
+                        ui.vertical_centered(|ui| {
+                            if styled_button(ui, "REVIEW SPRITES", false, egui::vec2(200.0, 40.0)) {
+                                self.reviewing = true;
+                                self.swipe_index = 0;
+                                self.swipe_texture = None;
+                            }
+                        });
+                    }
+                }
+            } else {
+                // Swipe review mode
+                let sprite_count = {
+                    let s = self.gen_state.lock().unwrap();
+                    s.individual_sprites.len()
+                };
+
+                if self.swipe_index < sprite_count {
+                    // Show current sprite
+                    let (pixels_f32, class_id) = {
+                        let s = self.gen_state.lock().unwrap();
+                        (s.individual_sprites[self.swipe_index].clone(),
+                         s.sprite_class_ids[self.swipe_index])
+                    };
+
+                    // Convert f32 RGB to u8 RGBA for display
+                    let size = 16usize;
+                    let mut rgba = vec![0u8; size * size * 4];
+                    for i in 0..size*size {
+                        let r = (pixels_f32[i].clamp(0.0, 1.0) * 255.0) as u8;
+                        let g = (pixels_f32[size*size + i].clamp(0.0, 1.0) * 255.0) as u8;
+                        let b = (pixels_f32[2*size*size + i].clamp(0.0, 1.0) * 255.0) as u8;
+                        rgba[i*4] = r;
+                        rgba[i*4+1] = g;
+                        rgba[i*4+2] = b;
+                        rgba[i*4+3] = 255;
+                    }
+
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied([size, size], &rgba);
+                    let opts = egui::TextureOptions {
+                        magnification: egui::TextureFilter::Nearest,
+                        minification: egui::TextureFilter::Nearest,
+                        ..Default::default()
+                    };
+                    self.swipe_texture = Some(ctx.load_texture("swipe_sprite", color_image, opts));
+
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new(
+                            format!("REVIEW {}/{}", self.swipe_index + 1, sprite_count)
+                        ).size(14.0).color(ACCENT).strong());
+                        ui.add_space(8.0);
+
+                        if let Some(ref tex) = self.swipe_texture {
+                            let display_size = egui::vec2(256.0, 256.0);
+                            ui.add(
+                                egui::Image::new(egui::load::SizedTexture::new(tex.id(), display_size))
+                                    .rounding(egui::Rounding::same(8))
+                            );
+                        }
+
+                        ui.add_space(16.0);
+
+                        // Swipe buttons
+                        ui.horizontal(|ui| {
+                            ui.add_space(40.0);
+                            // Bad (left swipe)
+                            let bad_btn = egui::Button::new(
+                                egui::RichText::new("NOPE").size(18.0).color(egui::Color32::WHITE).strong()
+                            )
+                                .fill(egui::Color32::from_rgb(200, 50, 50))
+                                .rounding(egui::Rounding::same(12))
+                                .min_size(egui::vec2(120.0, 50.0));
+                            if ui.add(bad_btn).clicked() {
+                                self.swipe_store.record(pixels_f32.clone(), false, class_id);
+                                self.swipe_index += 1;
+                                self.swipe_texture = None;
+                            }
+
+                            ui.add_space(16.0);
+
+                            // Good (right swipe)
+                            let good_btn = egui::Button::new(
+                                egui::RichText::new("KEEP").size(18.0).color(egui::Color32::WHITE).strong()
+                            )
+                                .fill(egui::Color32::from_rgb(50, 180, 50))
+                                .rounding(egui::Rounding::same(12))
+                                .min_size(egui::vec2(120.0, 50.0));
+                            if ui.add(good_btn).clicked() {
+                                self.swipe_store.record(pixels_f32.clone(), true, class_id);
+                                self.swipe_index += 1;
+                                self.swipe_texture = None;
+                            }
+                        });
+
+                        ui.add_space(8.0);
+
+                        // Stats
+                        let stats = self.swipe_store.stats();
+                        ui.label(egui::RichText::new(
+                            format!("{} good / {} bad / {} total",
+                                stats.good, stats.bad, stats.total_ever)
+                        ).size(11.0).color(TEXT_DIM));
+
+                        // LoRA training trigger
+                        if self.swipe_store.should_retrain() {
+                            let training = *self.lora_training.lock().unwrap();
+                            if !training {
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new(
+                                    "enough feedback — LoRA training available"
+                                ).size(11.0).color(ACCENT));
+                            } else {
+                                ui.label(egui::RichText::new(
+                                    "LoRA training in progress..."
+                                ).size(11.0).color(ACCENT));
+                            }
+                        }
+                    });
+                } else {
+                    // Done reviewing
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("REVIEW COMPLETE").size(16.0).color(ACCENT).strong());
+                        ui.add_space(8.0);
+                        let stats = self.swipe_store.stats();
+                        ui.label(egui::RichText::new(
+                            format!("{} good / {} bad", stats.good, stats.bad)
+                        ).size(13.0).color(TEXT_BRIGHT));
+                        ui.add_space(16.0);
+
+                        if styled_button(ui, "BACK TO FORGE", false, egui::vec2(200.0, 44.0)) {
+                            self.reviewing = false;
+                            let _ = self.swipe_store.save("swipes.bin");
+                        }
+                    });
+                }
             }
 
             ui.add_space(24.0);
@@ -481,6 +690,64 @@ fn generate_for_display(
         .collect();
 
     // Pack into a grid sheet
+    let sheet = crate::sheet::pack_grid(&processed, count.min(8));
+    let w = sheet.width();
+    let h = sheet.height();
+    let pixels = sheet.into_raw();
+
+    Ok((pixels, w, h, 1))
+}
+
+/// MoE cascade: Cinder drafts → Quench refines.
+fn cascade_for_display(
+    class_id: u32,
+    count: u32,
+    steps: usize,
+    palette_name: &str,
+) -> anyhow::Result<(Vec<u8>, u32, u32, u64)> {
+    let pal = palette::load_palette(palette_name)?;
+    let img_size = 16u32;
+
+    let cinder_path = device_cap::Tier::Cinder.model_path();
+    let quench_path = device_cap::Tier::Quench.model_path();
+
+    if !cinder_path.exists() || !quench_path.exists() {
+        anyhow::bail!("cascade needs both Cinder and Quench models");
+    }
+
+    // Split steps: 25% cinder draft, 75% quench refine
+    let cinder_steps = (steps as f32 * 0.25).max(1.0) as usize;
+    let quench_steps = steps - cinder_steps;
+
+    let config = crate::moe::CascadeConfig {
+        cinder_steps,
+        quench_steps,
+    };
+
+    let experts_path_buf = device_cap::Tier::Cinder.model_path()
+        .parent().unwrap_or(std::path::Path::new("."))
+        .join("experts.safetensors");
+    let experts_path = if experts_path_buf.exists() {
+        Some(experts_path_buf.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    let raw_images = crate::moe::cascade_sample(
+        &cinder_path.to_string_lossy(),
+        &quench_path.to_string_lossy(),
+        experts_path.as_deref(),
+        class_id, img_size, count, &config,
+    )?;
+
+    let processed: Vec<image::RgbaImage> = raw_images
+        .into_iter()
+        .map(|img| {
+            let snapped = grid::snap_to_grid(&img, img_size);
+            palette::quantize(&snapped, &pal)
+        })
+        .collect();
+
     let sheet = crate::sheet::pack_grid(&processed, count.min(8));
     let w = sheet.width();
     let h = sheet.height();
