@@ -221,18 +221,18 @@ impl PixelForgeApp {
     }
 }
 
-/// Brand colors — dark forge aesthetic.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 102, 0); // forge orange
-const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(180, 70, 0); // muted orange
+/// Brand colors — dark forge + cochranblock cyber blue.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 217, 255); // #00d9ff cochranblock
+const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(0, 150, 180); // muted cyan
 const BG_DARK: egui::Color32 = egui::Color32::from_rgb(12, 12, 18); // matches icon bg
 const BG_CARD: egui::Color32 = egui::Color32::from_rgb(20, 20, 28);
 const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 120, 140);
 const TEXT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(220, 220, 235);
 const BTN_BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 42);
-const BTN_HOVER: egui::Color32 = egui::Color32::from_rgb(45, 40, 50);
-const BTN_SELECTED: egui::Color32 = egui::Color32::from_rgb(255, 102, 0);
-const BORDER_DIM: egui::Color32 = egui::Color32::from_rgb(40, 38, 48);
-const EMBER: egui::Color32 = egui::Color32::from_rgb(60, 25, 5); // subtle warm tint
+const BTN_HOVER: egui::Color32 = egui::Color32::from_rgb(35, 42, 52);
+const BTN_SELECTED: egui::Color32 = egui::Color32::from_rgb(0, 217, 255); // #00d9ff
+const BORDER_DIM: egui::Color32 = egui::Color32::from_rgb(30, 40, 50);
+const EMBER: egui::Color32 = egui::Color32::from_rgb(10, 35, 50); // subtle cool tint
 
 fn apply_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
