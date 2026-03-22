@@ -76,6 +76,8 @@ pub struct PixelForgeApp {
     texture: Option<egui::TextureHandle>,
     texture_version: u64,
     last_rendered_version: u64,
+    // Keyboard toggle for Android
+    pub keyboard_requested: bool,
     // Swipe review state
     swipe_store: crate::swipe_store::SwipeStore,
     swipe_index: usize,         // which sprite we're reviewing
@@ -95,6 +97,7 @@ impl Default for PixelForgeApp {
             selected_class: 0, // character
             selected_palette: 0, // stardew
             prompt_text: String::new(),
+            keyboard_requested: false,
             gen_mode: GenMode::Cascade,
             gen_count: 4,
             gen_steps: 40,
@@ -320,8 +323,18 @@ impl eframe::App for PixelForgeApp {
             // Prompt input
             ui.group(|ui| {
                 ui.set_width(ui.available_width());
-                section_label(ui, "DESCRIBE YOUR SPRITE");
-                let response = ui.add(
+                ui.horizontal(|ui| {
+                    section_label(ui, "DESCRIBE YOUR SPRITE");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let kb_btn = egui::Button::new(
+                            egui::RichText::new("KB").size(12.0).color(TEXT_BRIGHT)
+                        ).fill(BTN_BG).rounding(egui::Rounding::same(4)).min_size(egui::vec2(36.0, 24.0));
+                        if ui.add(kb_btn).clicked() {
+                            self.keyboard_requested = !self.keyboard_requested;
+                        }
+                    });
+                });
+                let _response = ui.add(
                     egui::TextEdit::multiline(&mut self.prompt_text)
                         .hint_text("knight with red cape, idle pose...")
                         .desired_rows(2)
@@ -329,7 +342,6 @@ impl eframe::App for PixelForgeApp {
                         .font(egui::TextStyle::Body)
                         .text_color(TEXT_BRIGHT)
                 );
-                // Character limit
                 if self.prompt_text.len() > 500 {
                     self.prompt_text.truncate(500);
                 }
