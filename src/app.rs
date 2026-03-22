@@ -173,8 +173,11 @@ impl PixelForgeApp {
 
         std::thread::spawn(move || {
             let class_id = class_name_to_id(&class_name);
-            let result = if let Some(ref cluster) = cluster_state {
+            let result: anyhow::Result<GenResult> = if let Some(ref cluster) = cluster_state {
                 cluster_generate_for_display(&class_name, count, steps, &palette_name, cluster)
+                    .map(|(pixels, w, h, _)| GenResult {
+                        sheet_pixels: pixels, width: w, height: h, sprites_f32: Vec::new()
+                    })
             } else {
                 match mode {
                     GenMode::Cascade => {
@@ -192,11 +195,13 @@ impl PixelForgeApp {
             let mut s = state.lock().unwrap();
             s.generating = false;
             match result {
-                Ok((pixels, w, h, _)) => {
+                Ok(result) => {
                     s.status = format!("done — {} sprites", count);
-                    s.result_pixels = Some(pixels);
-                    s.result_width = w;
-                    s.result_height = h;
+                    s.result_pixels = Some(result.sheet_pixels);
+                    s.result_width = result.width;
+                    s.result_height = result.height;
+                    s.individual_sprites = result.sprites_f32;
+                    s.sprite_class_ids = vec![class_id; count as usize];
                 }
                 Err(e) => {
                     s.status = format!("error: {e}");
@@ -657,6 +662,31 @@ impl eframe::App for PixelForgeApp {
     }
 }
 
+/// Result from generation — sheet pixels + individual sprites for swipe review.
+struct GenResult {
+    sheet_pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    /// Individual sprites as channel-first f32 (3*16*16 each).
+    sprites_f32: Vec<Vec<f32>>,
+}
+
+/// Extract channel-first f32 pixels from an RgbaImage for swipe storage.
+fn rgba_to_f32(img: &image::RgbaImage) -> Vec<f32> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let mut out = vec![0.0f32; 3 * w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let px = img.get_pixel(x as u32, y as u32);
+            let idx = y * w + x;
+            out[idx] = px[0] as f32 / 255.0;
+            out[w * h + idx] = px[1] as f32 / 255.0;
+            out[2 * w * h + idx] = px[2] as f32 / 255.0;
+        }
+    }
+    out
+}
+
 /// Generate sprites and return raw RGBA pixels for display.
 fn generate_for_display(
     tier: Tier,
@@ -664,7 +694,7 @@ fn generate_for_display(
     count: u32,
     steps: usize,
     palette_name: &str,
-) -> anyhow::Result<(Vec<u8>, u32, u32, u64)> {
+) -> anyhow::Result<GenResult> {
     let pal = palette::load_palette(palette_name)?;
     let img_size = 16u32;
 
@@ -689,13 +719,14 @@ fn generate_for_display(
         })
         .collect();
 
-    // Pack into a grid sheet
+    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(|img| rgba_to_f32(img)).collect();
+
     let sheet = crate::sheet::pack_grid(&processed, count.min(8));
     let w = sheet.width();
     let h = sheet.height();
     let pixels = sheet.into_raw();
 
-    Ok((pixels, w, h, 1))
+    Ok(GenResult { sheet_pixels: pixels, width: w, height: h, sprites_f32 })
 }
 
 /// MoE cascade: Cinder drafts → Quench refines.
@@ -704,7 +735,7 @@ fn cascade_for_display(
     count: u32,
     steps: usize,
     palette_name: &str,
-) -> anyhow::Result<(Vec<u8>, u32, u32, u64)> {
+) -> anyhow::Result<GenResult> {
     let pal = palette::load_palette(palette_name)?;
     let img_size = 16u32;
 
@@ -748,12 +779,14 @@ fn cascade_for_display(
         })
         .collect();
 
+    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(|img| rgba_to_f32(img)).collect();
+
     let sheet = crate::sheet::pack_grid(&processed, count.min(8));
     let w = sheet.width();
     let h = sheet.height();
     let pixels = sheet.into_raw();
 
-    Ok((pixels, w, h, 1))
+    Ok(GenResult { sheet_pixels: pixels, width: w, height: h, sprites_f32 })
 }
 
 /// Generate via cluster and return RGBA pixels for display.
