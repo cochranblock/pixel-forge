@@ -172,13 +172,7 @@ pub fn load_varmap(varmap: &candle_nn::VarMap, path: &str) -> Result<()> {
                 } else {
                     src.clone()
                 };
-                // Move to the variable's device if needed
-                let src_dev = if src_f32.device() != var.device() {
-                    src_f32.to_device(var.device())?
-                } else {
-                    src_f32
-                };
-                var.set(&src_dev)?;
+                var.set(&src_f32.to_device(var.device())?)?;
             }
         }
         Ok(())
