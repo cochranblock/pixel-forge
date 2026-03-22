@@ -56,7 +56,7 @@ pub fn cascade_sample(
     let mut cinder_vm = VarMap::new();
     let cinder_vb = VarBuilder::from_varmap(&cinder_vm, DType::F32, &device);
     let cinder = TinyUNet::with_classes(cinder_vb, cinder_classes)?;
-    crate::quantize::load_varmap(&cinder_vm, cinder_path)?;
+    crate::quantize::load_varmap(&mut cinder_vm, cinder_path)?;
 
     // Load Quench (f16→f32 transparently)
     println!("loading Quench from {quench_path}{}...",
@@ -65,7 +65,7 @@ pub fn cascade_sample(
     let mut quench_vm = VarMap::new();
     let quench_vb = VarBuilder::from_varmap(&quench_vm, DType::F32, &device);
     let quench = MediumUNet::with_classes(quench_vb, quench_classes)?;
-    crate::quantize::load_varmap(&quench_vm, quench_path)?;
+    crate::quantize::load_varmap(&mut quench_vm, quench_path)?;
 
     // Load experts (optional — works without them, just no correction)
     let experts = if let Some(path) = experts_path {
