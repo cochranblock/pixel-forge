@@ -31,6 +31,12 @@ The tiny diffusion model architecture and training approach were inspired by:
 - **Developer:** Chucklefish
 - **What we used:** The "starbound" built-in palette is inspired by Starbound's vibrant sci-fi color palette. No game assets were used.
 
+### Anvil Sprite (App Icon)
+- **Creator:** Stendhal art team
+- **License:** CC0 (Creative Commons Zero — public domain)
+- **Source:** https://opengameart.org/content/anvil-2
+- **What we used:** The 64x64 black anvil sprite as the centerpiece of the app icon. Scaled and composited onto a dark background with cyan spark effects and "PF" monogram. No modifications to the original sprite pixels.
+
 ### Candle ML Framework
 - **Author:** Hugging Face
 - **License:** MIT / Apache 2.0
