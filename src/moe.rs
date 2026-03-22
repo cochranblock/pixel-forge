@@ -49,25 +49,23 @@ pub fn cascade_sample(
     let device = crate::pipeline::best_device();
     let total_steps = config.cinder_steps + config.quench_steps;
 
-    // Load Cinder (auto-detect f16/f32)
-    let cinder_dtype = crate::quantize::candle_dtype_for(cinder_path);
-    println!("loading Cinder from {cinder_path} ({})...",
-        if cinder_dtype == DType::F16 { "f16" } else { "f32" });
+    // Load Cinder (f16→f32 transparently)
+    println!("loading Cinder from {cinder_path}{}...",
+        if crate::quantize::is_f16(cinder_path) { " (f16→f32)" } else { "" });
     let cinder_classes = crate::train::detect_class_count_pub(cinder_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let mut cinder_vm = VarMap::new();
-    let cinder_vb = VarBuilder::from_varmap(&cinder_vm, cinder_dtype, &device);
+    let cinder_vb = VarBuilder::from_varmap(&cinder_vm, DType::F32, &device);
     let cinder = TinyUNet::with_classes(cinder_vb, cinder_classes)?;
-    cinder_vm.load(cinder_path)?;
+    crate::quantize::load_varmap(&cinder_vm, cinder_path)?;
 
-    // Load Quench (auto-detect f16/f32)
-    let quench_dtype = crate::quantize::candle_dtype_for(quench_path);
-    println!("loading Quench from {quench_path} ({})...",
-        if quench_dtype == DType::F16 { "f16" } else { "f32" });
+    // Load Quench (f16→f32 transparently)
+    println!("loading Quench from {quench_path}{}...",
+        if crate::quantize::is_f16(quench_path) { " (f16→f32)" } else { "" });
     let quench_classes = crate::train::detect_class_count_pub(quench_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let mut quench_vm = VarMap::new();
-    let quench_vb = VarBuilder::from_varmap(&quench_vm, quench_dtype, &device);
+    let quench_vb = VarBuilder::from_varmap(&quench_vm, DType::F32, &device);
     let quench = MediumUNet::with_classes(quench_vb, quench_classes)?;
-    quench_vm.load(quench_path)?;
+    crate::quantize::load_varmap(&quench_vm, quench_path)?;
 
     // Load experts (optional — works without them, just no correction)
     let experts = if let Some(path) = experts_path {
@@ -91,26 +89,22 @@ pub fn cascade_sample(
     let mut images = Vec::new();
 
     for i in 0..count {
-        // Start from noise in Cinder's dtype
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
-            .to_dtype(cinder_dtype)?;
+        // Start from noise (always f32 — models loaded as f32)
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         // Phase 1: Cinder draft (fast, rough shape)
         for step in 0..config.cinder_steps {
             let noise_level = 1.0 - (step as f32 / total_steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?.to_dtype(cinder_dtype)?;
+            let t = Tensor::new(&[noise_level], &device)?;
             let pred = cinder.forward(&x, &t, &class_tensor)?;
             let mix = 1.0 / (total_steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        // Handoff: cast to Quench dtype if different
-        x = x.to_dtype(quench_dtype)?;
-
         // Phase 2: Quench + Experts (encode → correct → decode)
         for step in config.cinder_steps..total_steps {
             let noise_level = 1.0 - (step as f32 / total_steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?.to_dtype(quench_dtype)?;
+            let t = Tensor::new(&[noise_level], &device)?;
 
             // Encode
             let (mut features, skips, t_emb) = quench.encode(&x, &t, &class_tensor)?;
@@ -127,8 +121,8 @@ pub fn cascade_sample(
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        // To image (cast back to f32 for conversion)
-        let x = x.to_dtype(DType::F32)?.clamp(0.0, 1.0)?;
+        // To image
+        let x = x.clamp(0.0, 1.0)?;
         let x = (x * 255.0)?.to_dtype(DType::U8)?;
         let x = x.squeeze(0)?.permute((1, 2, 0))?;
         let pixels = x.flatten_all()?.to_vec1::<u8>()?;

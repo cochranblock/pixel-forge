@@ -621,7 +621,7 @@ fn tensor_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
 }
 
 /// Sample from a trained TinyUNet (Cinder) with CFG.
-/// Auto-detects f16 vs f32 weights from the safetensors header.
+/// Loads f16 weights as f32 transparently — f16 is storage-only.
 pub fn sample(
     model_path: &str,
     class_id: u32,
@@ -630,16 +630,15 @@ pub fn sample(
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
-    let dtype = crate::quantize::candle_dtype_for(model_path);
+    let is_f16 = crate::quantize::is_f16(model_path);
 
-    let dtype_label = if dtype == DType::F16 { "f16" } else { "f32" };
-    println!("loading model from {model_path} ({dtype_label})...");
+    println!("loading model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
     let n_classes = detect_class_count(model_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
-    let has_null_class = n_classes > 15; // 16+ means index 15 is the null/unconditional class
+    let has_null_class = n_classes > 15;
     let mut varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = TinyUNet::with_classes(vb, n_classes)?;
-    varmap.load(model_path)?;
+    crate::quantize::load_varmap(&varmap, model_path)?;
 
     let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
     let params = TinyUNet::param_count(&varmap);
@@ -649,24 +648,22 @@ pub fn sample(
     let null_class = if has_null_class {
         Tensor::new(&[CFG_NULL_CLASS], &device)?
     } else {
-        Tensor::new(&[0u32], &device)? // unused when cfg_scale=1.0
+        Tensor::new(&[0u32], &device)?
     };
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
-            .to_dtype(dtype)?;
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?.to_dtype(dtype)?;
+            let t = Tensor::new(&[noise_level], &device)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        // Cast back to f32 for image conversion
-        images.push(tensor_to_rgba(&x.to_dtype(DType::F32)?, img_size)?);
+        images.push(tensor_to_rgba(&x, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -674,7 +671,7 @@ pub fn sample(
 }
 
 /// Sample from a trained MediumUNet (Quench) with CFG.
-/// Auto-detects f16 vs f32 weights from the safetensors header.
+/// Loads f16 weights as f32 transparently.
 pub fn sample_medium(
     model_path: &str,
     class_id: u32,
@@ -683,16 +680,15 @@ pub fn sample_medium(
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
-    let dtype = crate::quantize::candle_dtype_for(model_path);
+    let is_f16 = crate::quantize::is_f16(model_path);
 
-    let dtype_label = if dtype == DType::F16 { "f16" } else { "f32" };
-    println!("loading Quench model from {model_path} ({dtype_label})...");
+    println!("loading Quench model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
     let n_classes = detect_class_count(model_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let has_null_class = n_classes > 15;
     let mut varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = MediumUNet::with_classes(vb, n_classes)?;
-    varmap.load(model_path)?;
+    crate::quantize::load_varmap(&varmap, model_path)?;
 
     let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
     let params = MediumUNet::param_count(&varmap);
@@ -707,18 +703,17 @@ pub fn sample_medium(
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
-            .to_dtype(dtype)?;
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?.to_dtype(dtype)?;
+            let t = Tensor::new(&[noise_level], &device)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        images.push(tensor_to_rgba(&x.to_dtype(DType::F32)?, img_size)?);
+        images.push(tensor_to_rgba(&x, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -726,7 +721,7 @@ pub fn sample_medium(
 }
 
 /// Sample from a trained AnvilUNet with CFG.
-/// Auto-detects f16 vs f32 weights from the safetensors header.
+/// Loads f16 weights as f32 transparently.
 pub fn sample_anvil(
     model_path: &str,
     class_id: u32,
@@ -735,14 +730,13 @@ pub fn sample_anvil(
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
-    let dtype = crate::quantize::candle_dtype_for(model_path);
+    let is_f16 = crate::quantize::is_f16(model_path);
 
-    let dtype_label = if dtype == DType::F16 { "f16" } else { "f32" };
-    println!("loading Anvil model from {model_path} ({dtype_label})...");
+    println!("loading Anvil model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
     let mut varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = AnvilUNet::new(vb)?;
-    varmap.load(model_path)?;
+    crate::quantize::load_varmap(&varmap, model_path)?;
 
     let params = AnvilUNet::param_count(&varmap);
     println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={}", params, count, DEFAULT_CFG_SCALE);
@@ -752,18 +746,17 @@ pub fn sample_anvil(
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?
-            .to_dtype(dtype)?;
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?.to_dtype(dtype)?;
+            let t = Tensor::new(&[noise_level], &device)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
 
-        images.push(tensor_to_rgba(&x.to_dtype(DType::F32)?, img_size)?);
+        images.push(tensor_to_rgba(&x, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 

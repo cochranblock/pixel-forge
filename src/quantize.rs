@@ -151,10 +151,40 @@ pub fn is_f16(path: &str) -> bool {
 
 /// Return the candle DType matching a safetensors file.
 pub fn candle_dtype_for(path: &str) -> candle_core::DType {
+    // Always compute in f32 — f16 is for storage only.
+    // On CPU, f16 compute is slow (no NEON in candle).
+    // On Metal, the cast overhead is negligible vs download savings.
+    candle_core::DType::F32
+}
+
+/// Load a safetensors file into a VarMap, casting f16→f32 if needed.
+pub fn load_varmap(varmap: &candle_nn::VarMap, path: &str) -> Result<()> {
+    use candle_core::DType;
+
     if is_f16(path) {
-        candle_core::DType::F16
+        // Load raw tensors, cast f16→f32, then set in varmap
+        let tensors = candle_core::safetensors::load(path, &candle_core::Device::Cpu)?;
+        let data = varmap.data().lock().unwrap();
+        for (name, var) in data.iter() {
+            if let Some(src) = tensors.get(name) {
+                let src_f32 = if src.dtype() == DType::F16 {
+                    src.to_dtype(DType::F32)?
+                } else {
+                    src.clone()
+                };
+                // Move to the variable's device if needed
+                let src_dev = if src_f32.device() != var.device() {
+                    src_f32.to_device(var.device())?
+                } else {
+                    src_f32
+                };
+                var.set(&src_dev)?;
+            }
+        }
+        Ok(())
     } else {
-        candle_core::DType::F32
+        varmap.load(path)?;
+        Ok(())
     }
 }
 
