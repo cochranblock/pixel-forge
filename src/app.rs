@@ -221,14 +221,18 @@ impl PixelForgeApp {
     }
 }
 
-/// Brand colors.
+/// Brand colors — dark forge aesthetic.
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 102, 0); // forge orange
-const BG_DARK: egui::Color32 = egui::Color32::from_rgb(18, 18, 24);
-const BG_CARD: egui::Color32 = egui::Color32::from_rgb(28, 28, 38);
-const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(140, 140, 160);
-const TEXT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(230, 230, 240);
-const BTN_BG: egui::Color32 = egui::Color32::from_rgb(40, 40, 55);
+const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(180, 70, 0); // muted orange
+const BG_DARK: egui::Color32 = egui::Color32::from_rgb(12, 12, 18); // matches icon bg
+const BG_CARD: egui::Color32 = egui::Color32::from_rgb(20, 20, 28);
+const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 120, 140);
+const TEXT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(220, 220, 235);
+const BTN_BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 42);
+const BTN_HOVER: egui::Color32 = egui::Color32::from_rgb(45, 40, 50);
 const BTN_SELECTED: egui::Color32 = egui::Color32::from_rgb(255, 102, 0);
+const BORDER_DIM: egui::Color32 = egui::Color32::from_rgb(40, 38, 48);
+const EMBER: egui::Color32 = egui::Color32::from_rgb(60, 25, 5); // subtle warm tint
 
 fn apply_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
@@ -238,12 +242,18 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.inactive.bg_fill = BTN_BG;
     visuals.widgets.inactive.weak_bg_fill = BTN_BG;
     visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT_DIM);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(55, 55, 75);
+    visuals.widgets.hovered.bg_fill = BTN_HOVER;
     visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, TEXT_BRIGHT);
     visuals.widgets.active.bg_fill = ACCENT;
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
     visuals.selection.bg_fill = ACCENT;
     visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    // Group/card frames — dark with subtle orange-tinted border
+    visuals.widgets.noninteractive.bg_fill = BG_CARD;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER_DIM);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT_DIM);
+    // Slider track
+    visuals.widgets.inactive.rounding = egui::Rounding::same(4);
     ctx.set_visuals(visuals);
 }
 
@@ -454,15 +464,21 @@ impl eframe::App for PixelForgeApp {
                     "FORGE"
                 };
 
-                let btn_color = if can_generate { ACCENT } else { BTN_BG };
-                let text_color = if can_generate { egui::Color32::WHITE } else { TEXT_DIM };
+                let (btn_color, text_color) = if generating {
+                    (EMBER, ACCENT)
+                } else if can_generate {
+                    (ACCENT, egui::Color32::WHITE)
+                } else {
+                    (BTN_BG, TEXT_DIM)
+                };
 
                 let btn = egui::Button::new(
-                    egui::RichText::new(label).size(20.0).color(text_color).strong()
+                    egui::RichText::new(label).size(22.0).color(text_color).strong()
                 )
                     .fill(btn_color)
-                    .rounding(egui::Rounding::same(12))
-                    .min_size(egui::vec2(280.0, 56.0));
+                    .stroke(egui::Stroke::new(if can_generate { 2.0 } else { 0.0 }, ACCENT_DIM))
+                    .rounding(egui::Rounding::same(14))
+                    .min_size(egui::vec2(300.0, 60.0));
 
                 let response = ui.add_enabled(can_generate, btn);
                 if response.clicked() {
