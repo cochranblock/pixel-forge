@@ -70,13 +70,19 @@ struct MobileApp {
 
 impl eframe::App for MobileApp {
     fn update(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
-        let wants_kb = ctx.wants_keyboard_input();
+        // Check both egui's keyboard request and our manual toggle
+        let wants_kb = ctx.wants_keyboard_input() || self.inner.keyboard_requested;
         if wants_kb && !self.keyboard_visible {
             self.android_app.show_soft_input(true);
             self.keyboard_visible = true;
         } else if !wants_kb && self.keyboard_visible {
             self.android_app.hide_soft_input(false);
             self.keyboard_visible = false;
+        }
+
+        // Reset the manual toggle after processing
+        if self.inner.keyboard_requested && self.keyboard_visible {
+            // Keep it open until user toggles again
         }
 
         self.inner.update(ctx, frame);
