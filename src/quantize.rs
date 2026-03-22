@@ -158,7 +158,7 @@ pub fn candle_dtype_for(path: &str) -> candle_core::DType {
 }
 
 /// Load a safetensors file into a VarMap, casting f16→f32 if needed.
-pub fn load_varmap(varmap: &candle_nn::VarMap, path: &str) -> Result<()> {
+pub fn load_varmap(varmap: &mut candle_nn::VarMap, path: &str) -> Result<()> {
     use candle_core::DType;
 
     if is_f16(path) {

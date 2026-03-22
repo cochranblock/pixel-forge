@@ -638,7 +638,7 @@ pub fn sample(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = TinyUNet::with_classes(vb, n_classes)?;
-    crate::quantize::load_varmap(&varmap, model_path)?;
+    crate::quantize::load_varmap(&mut varmap, model_path)?;
 
     let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
     let params = TinyUNet::param_count(&varmap);
@@ -688,7 +688,7 @@ pub fn sample_medium(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = MediumUNet::with_classes(vb, n_classes)?;
-    crate::quantize::load_varmap(&varmap, model_path)?;
+    crate::quantize::load_varmap(&mut varmap, model_path)?;
 
     let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
     let params = MediumUNet::param_count(&varmap);
@@ -736,7 +736,7 @@ pub fn sample_anvil(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = AnvilUNet::new(vb)?;
-    crate::quantize::load_varmap(&varmap, model_path)?;
+    crate::quantize::load_varmap(&mut varmap, model_path)?;
 
     let params = AnvilUNet::param_count(&varmap);
     println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={}", params, count, DEFAULT_CFG_SCALE);
