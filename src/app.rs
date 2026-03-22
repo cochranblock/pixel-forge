@@ -39,6 +39,7 @@ pub struct PixelForgeApp {
     use_cluster: bool,
     selected_class: usize,
     selected_palette: usize,
+    prompt_text: String,
     gen_count: u32,
     gen_steps: usize,
     gen_state: Arc<Mutex<GenerationState>>,
@@ -57,6 +58,7 @@ impl Default for PixelForgeApp {
             use_cluster: true,
             selected_class: 0, // character
             selected_palette: 0, // stardew
+            prompt_text: String::new(),
             gen_count: 4,
             gen_steps: 40,
             gen_state: Arc::new(Mutex::new(GenerationState {
@@ -159,111 +161,198 @@ impl PixelForgeApp {
     }
 }
 
+/// Brand colors.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 102, 0); // forge orange
+const BG_DARK: egui::Color32 = egui::Color32::from_rgb(18, 18, 24);
+const BG_CARD: egui::Color32 = egui::Color32::from_rgb(28, 28, 38);
+const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(140, 140, 160);
+const TEXT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(230, 230, 240);
+const BTN_BG: egui::Color32 = egui::Color32::from_rgb(40, 40, 55);
+const BTN_SELECTED: egui::Color32 = egui::Color32::from_rgb(255, 102, 0);
+
+fn apply_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = BG_DARK;
+    visuals.window_fill = BG_DARK;
+    visuals.override_text_color = Some(TEXT_BRIGHT);
+    visuals.widgets.inactive.bg_fill = BTN_BG;
+    visuals.widgets.inactive.weak_bg_fill = BTN_BG;
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT_DIM);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(55, 55, 75);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, TEXT_BRIGHT);
+    visuals.widgets.active.bg_fill = ACCENT;
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    visuals.selection.bg_fill = ACCENT;
+    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    ctx.set_visuals(visuals);
+}
+
+fn styled_button(ui: &mut egui::Ui, label: &str, selected: bool, min_size: egui::Vec2) -> bool {
+    let (bg, fg) = if selected {
+        (BTN_SELECTED, egui::Color32::WHITE)
+    } else {
+        (BTN_BG, TEXT_BRIGHT)
+    };
+    let btn = egui::Button::new(
+        egui::RichText::new(label).color(fg).size(14.0)
+    )
+        .fill(bg)
+        .rounding(egui::Rounding::same(6))
+        .min_size(min_size);
+    ui.add(btn).clicked()
+}
+
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).color(TEXT_DIM).size(12.0).strong());
+    ui.add_space(4.0);
+}
+
 impl eframe::App for PixelForgeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Dark theme
-        ctx.set_visuals(egui::Visuals::dark());
+        apply_theme(ctx);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(16, 12)))
+            .show(ctx, |ui| {
+            // Scrollable for small screens
+            egui::ScrollArea::vertical().show(ui, |ui| {
+
+            // Header
             ui.vertical_centered(|ui| {
-                ui.add_space(12.0);
-                ui.heading("Pixel Forge");
-                ui.label("local AI sprite generator");
+                ui.add_space(16.0);
+                ui.label(egui::RichText::new("PIXEL FORGE").size(28.0).color(ACCENT).strong());
+                ui.label(egui::RichText::new("local AI sprite generator").size(13.0).color(TEXT_DIM));
                 ui.add_space(8.0);
             });
 
-            // Device + cluster info bar
+            // Device info chip
             if let Some(ref profile) = self.profile {
-                ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "{} | {} MB RAM | {} tier",
-                        profile.backend, profile.ram_mb, profile.tier
-                    ));
+                ui.vertical_centered(|ui| {
+                    let chip = format!("{} | {} MB | {}", profile.backend, profile.ram_mb, profile.tier);
+                    let label = egui::Label::new(
+                        egui::RichText::new(chip).size(11.0).color(TEXT_DIM)
+                    );
+                    ui.add(label);
                 });
             }
+
+            // Cluster info (desktop only)
+            #[cfg(not(target_os = "android"))]
             {
                 let probing = *self.cluster_probing.lock().unwrap();
                 let cluster = self.cluster.lock().unwrap();
                 if probing {
-                    ui.horizontal(|ui| {
-                        ui.label("probing cluster nodes...");
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("probing cluster...").size(11.0).color(TEXT_DIM));
                     });
                 } else if let Some(ref cs) = *cluster {
                     let active = cs.active_nodes().len();
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.use_cluster, "forge cluster");
+                        ui.checkbox(&mut self.use_cluster, "");
                         if self.use_cluster {
-                            ui.label(format!(
-                                "{} nodes | {:.0} sprites/sec",
-                                active, cs.total_throughput
-                            ));
+                            ui.label(egui::RichText::new(
+                                format!("cluster: {} nodes | {:.0} spr/s", active, cs.total_throughput)
+                            ).size(11.0).color(ACCENT));
                         } else {
-                            ui.label("local only");
+                            ui.label(egui::RichText::new("local only").size(11.0).color(TEXT_DIM));
                         }
                     });
                 }
             }
-            if self.profile.is_some() || self.profile_error.is_some() {
-                ui.separator();
-            }
+
             if let Some(ref err) = self.profile_error {
-                ui.colored_label(egui::Color32::RED, format!("device error: {err}"));
+                ui.colored_label(egui::Color32::from_rgb(255, 80, 80), format!("error: {err}"));
             }
+
+            ui.add_space(16.0);
+
+            // Prompt input
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                section_label(ui, "DESCRIBE YOUR SPRITE");
+                let response = ui.add(
+                    egui::TextEdit::multiline(&mut self.prompt_text)
+                        .hint_text("knight with red cape, idle pose...")
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY)
+                        .font(egui::TextStyle::Body)
+                        .text_color(TEXT_BRIGHT)
+                );
+                // Character limit
+                if self.prompt_text.len() > 500 {
+                    self.prompt_text.truncate(500);
+                }
+                let char_count = self.prompt_text.len();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{}/500", char_count)).size(10.0).color(
+                        if char_count > 400 { ACCENT } else { egui::Color32::from_rgb(80, 80, 100) }
+                    ));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new("optional — class selection used if empty").size(10.0).color(
+                            egui::Color32::from_rgb(80, 80, 100)
+                        ));
+                    });
+                });
+            });
 
             ui.add_space(8.0);
 
-            // Class selector — big buttons for mobile
-            ui.label("what to generate:");
-            ui.add_space(4.0);
-            egui::Grid::new("class_grid")
-                .num_columns(5)
-                .spacing([6.0, 6.0])
-                .show(ui, |ui| {
-                    for (i, name) in CLASS_NAMES.iter().enumerate() {
-                        let selected = self.selected_class == i;
-                        let btn = egui::Button::new(*name)
-                            .min_size(egui::vec2(70.0, 36.0))
-                            .selected(selected);
-                        if ui.add(btn).clicked() {
-                            self.selected_class = i;
+            // Class selector — card style
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                section_label(ui, "SPRITE CLASS");
+                egui::Grid::new("class_grid")
+                    .num_columns(5)
+                    .spacing([4.0, 4.0])
+                    .show(ui, |ui| {
+                        for (i, name) in CLASS_NAMES.iter().enumerate() {
+                            let selected = self.selected_class == i;
+                            if styled_button(ui, name, selected, egui::vec2(62.0, 36.0)) {
+                                self.selected_class = i;
+                            }
+                            if (i + 1) % 5 == 0 {
+                                ui.end_row();
+                            }
                         }
-                        if (i + 1) % 5 == 0 {
-                            ui.end_row();
+                    });
+            });
+
+            ui.add_space(8.0);
+
+            // Palette selector
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                section_label(ui, "PALETTE");
+                ui.horizontal_wrapped(|ui| {
+                    for (i, name) in PALETTE_NAMES.iter().enumerate() {
+                        let selected = self.selected_palette == i;
+                        if styled_button(ui, name, selected, egui::vec2(56.0, 32.0)) {
+                            self.selected_palette = i;
                         }
                     }
                 });
-
-            ui.add_space(12.0);
-
-            // Palette selector
-            ui.label("palette:");
-            ui.horizontal_wrapped(|ui| {
-                for (i, name) in PALETTE_NAMES.iter().enumerate() {
-                    let selected = self.selected_palette == i;
-                    let btn = egui::Button::new(*name)
-                        .min_size(egui::vec2(60.0, 32.0))
-                        .selected(selected);
-                    if ui.add(btn).clicked() {
-                        self.selected_palette = i;
-                    }
-                }
             });
 
-            ui.add_space(12.0);
+            ui.add_space(8.0);
 
-            // Count + steps — cluster mode allows bigger batches
-            let max_count = if self.use_cluster { 64 } else { 16 };
-            ui.horizontal(|ui| {
-                ui.label("count:");
-                ui.add(egui::Slider::new(&mut self.gen_count, 1..=max_count));
-                ui.add_space(16.0);
-                ui.label("steps:");
-                ui.add(egui::Slider::new(&mut self.gen_steps, 10..=100));
+            // Controls
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                section_label(ui, "SETTINGS");
+                let max_count = if self.use_cluster { 64 } else { 16 };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("count").size(12.0).color(TEXT_DIM));
+                    ui.add(egui::Slider::new(&mut self.gen_count, 1..=max_count).text(""));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("steps").size(12.0).color(TEXT_DIM));
+                    ui.add(egui::Slider::new(&mut self.gen_steps, 10..=100).text(""));
+                });
             });
 
             ui.add_space(16.0);
 
-            // Generate button
+            // Generate button — big, prominent
             let generating = {
                 let s = self.gen_state.lock().unwrap();
                 s.generating
@@ -272,17 +361,23 @@ impl eframe::App for PixelForgeApp {
             let can_generate = self.profile.is_some() && !generating;
             ui.vertical_centered(|ui| {
                 let label = if generating {
-                    "forging...".to_string()
-                } else if self.use_cluster && self.cluster.lock().unwrap().is_some() {
-                    let n = self.cluster.lock().unwrap().as_ref().unwrap().active_nodes().len();
-                    format!("Forge ({n} nodes)")
+                    "FORGING..."
                 } else {
-                    "Generate".to_string()
+                    "FORGE"
                 };
-                let btn = egui::Button::new(label)
-                    .min_size(egui::vec2(200.0, 48.0));
-                let btn = ui.add_enabled(can_generate, btn);
-                if btn.clicked() {
+
+                let btn_color = if can_generate { ACCENT } else { BTN_BG };
+                let text_color = if can_generate { egui::Color32::WHITE } else { TEXT_DIM };
+
+                let btn = egui::Button::new(
+                    egui::RichText::new(label).size(20.0).color(text_color).strong()
+                )
+                    .fill(btn_color)
+                    .rounding(egui::Rounding::same(12))
+                    .min_size(egui::vec2(280.0, 56.0));
+
+                let response = ui.add_enabled(can_generate, btn);
+                if response.clicked() {
                     self.start_generation(ctx);
                 }
             });
@@ -294,12 +389,12 @@ impl eframe::App for PixelForgeApp {
                 let s = self.gen_state.lock().unwrap();
                 if !s.status.is_empty() {
                     ui.vertical_centered(|ui| {
-                        ui.label(&s.status);
+                        ui.label(egui::RichText::new(&s.status).size(12.0).color(TEXT_DIM));
                     });
                 }
             }
 
-            ui.add_space(8.0);
+            ui.add_space(12.0);
 
             // Result display
             let new_image = {
@@ -316,12 +411,11 @@ impl eframe::App for PixelForgeApp {
             };
 
             if let Some((pixels, w, h)) = new_image {
-                // Update texture if new
                 self.texture_version += 1;
                 if self.texture_version != self.last_rendered_version {
                     let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
                     let opts = egui::TextureOptions {
-                        magnification: egui::TextureFilter::Nearest, // pixel art — no smoothing
+                        magnification: egui::TextureFilter::Nearest,
                         minification: egui::TextureFilter::Nearest,
                         ..Default::default()
                     };
@@ -332,13 +426,25 @@ impl eframe::App for PixelForgeApp {
 
             if let Some(ref tex) = self.texture {
                 ui.vertical_centered(|ui| {
-                    // Scale up for visibility — pixel art is tiny
-                    let scale = 8.0;
-                    let size = tex.size_vec2() * scale;
-                    ui.image(egui::load::SizedTexture::new(tex.id(), size));
+                    let available = ui.available_width().min(360.0);
+                    let aspect = tex.size_vec2().y / tex.size_vec2().x;
+                    let size = egui::vec2(available, available * aspect);
+                    ui.add(
+                        egui::Image::new(egui::load::SizedTexture::new(tex.id(), size))
+                            .rounding(egui::Rounding::same(8))
+                    );
                 });
             }
-        });
+
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("cochranblock.org").size(10.0).color(
+                    egui::Color32::from_rgb(80, 80, 100)
+                ));
+            });
+
+            }); // ScrollArea
+        }); // CentralPanel
     }
 }
 

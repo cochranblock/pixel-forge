@@ -245,7 +245,24 @@ fn system_ram_mb() -> u64 {
             .map(|kb| kb / 1024)
             .unwrap_or(0)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "android")]
+    {
+        // Android is Linux under the hood — /proc/meminfo works
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("MemTotal:"))
+                    .and_then(|l| {
+                        l.split_whitespace()
+                            .nth(1)
+                            .and_then(|v| v.parse::<u64>().ok())
+                    })
+            })
+            .map(|kb| kb / 1024)
+            .unwrap_or(0)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
     {
         0
     }
