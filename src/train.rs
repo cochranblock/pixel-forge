@@ -582,6 +582,27 @@ pub fn train(config: &TrainConfig) -> Result<()> {
 /// Higher = stronger class adherence, lower = more diversity.
 const DEFAULT_CFG_SCALE: f64 = 3.0;
 
+/// Create seeded noise tensor. Same seed + class + index = same sprite every time.
+/// Inspired by No Man's Sky / Factorio deterministic world generation:
+/// a single seed cascades into reproducible content.
+fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, device: &Device) -> candle_core::Result<Tensor> {
+    use rand::SeedableRng;
+    let n = img_size as usize;
+
+    match seed {
+        Some(s) => {
+            // Hash seed + class + index for unique but deterministic noise
+            let combined = s.wrapping_mul(2654435761) ^ (class_id as u64).wrapping_mul(40503) ^ (index as u64).wrapping_mul(65537);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(combined);
+            let vals: Vec<f32> = (0..3 * n * n).map(|_| rng.gen::<f32>()).collect();
+            Tensor::from_vec(vals, (1, 3, n, n), device)
+        }
+        None => {
+            Tensor::rand(0f32, 1f32, (1, 3, n, n), device)
+        }
+    }
+}
+
 /// CFG-guided denoising step: run model conditioned + unconditional,
 /// blend predictions to amplify class signal.
 fn cfg_denoise(
@@ -622,12 +643,25 @@ fn tensor_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
 
 /// Sample from a trained TinyUNet (Cinder) with CFG.
 /// Loads f16 weights as f32 transparently — f16 is storage-only.
+/// Optional seed for deterministic generation (same seed = same sprite).
 pub fn sample(
     model_path: &str,
     class_id: u32,
     img_size: u32,
     count: u32,
     steps: usize,
+) -> Result<Vec<RgbaImage>> {
+    sample_seeded(model_path, class_id, img_size, count, steps, None)
+}
+
+/// Seeded sample — deterministic when seed is Some.
+pub fn sample_seeded(
+    model_path: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+    seed: Option<u64>,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
@@ -651,9 +685,13 @@ pub fn sample(
         Tensor::new(&[0u32], &device)?
     };
 
+    if let Some(s) = seed {
+        println!("  seed: {s}");
+    }
+
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
@@ -679,6 +717,18 @@ pub fn sample_medium(
     count: u32,
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
+    sample_medium_seeded(model_path, class_id, img_size, count, steps, None)
+}
+
+/// Seeded Quench sample.
+pub fn sample_medium_seeded(
+    model_path: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+    seed: Option<u64>,
+) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
 
@@ -701,9 +751,13 @@ pub fn sample_medium(
         Tensor::new(&[0u32], &device)?
     };
 
+    if let Some(s) = seed {
+        println!("  seed: {s}");
+    }
+
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
 
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);

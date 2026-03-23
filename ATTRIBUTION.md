@@ -42,3 +42,13 @@ The tiny diffusion model architecture and training approach were inspired by:
 - **License:** MIT / Apache 2.0
 - **Repository:** https://github.com/huggingface/candle
 - **What we used:** ML inference and training framework for Rust. The backbone of all model operations.
+
+### Procedural Generation Techniques (Concept Attribution)
+- **No Man's Sky** (Hello Games) — Seed-based deterministic generation. A single seed cascades through algorithms to produce reproducible content. Applied to pixel-forge's `--seed` flag: same seed + class = same sprite every time. Reference: https://nomanssky.fandom.com/wiki/Procedural_generation
+- **Factorio** (Wube Software) — Deterministic chunk-based world generation from a seed. The map is endless but only generated when needed. Applied to on-demand sprite generation per game chunk. Reference: https://wiki.factorio.com/Map_generator
+- **Wave Function Collapse** (Maxim Gumin) — Constraint-based tile placement from adjacency rules. Applied to scene generation (8x8 biome grids). MIT license. Reference: https://github.com/mxgmn/WaveFunctionCollapse
+
+### tokio-prompt-orchestrator (Architecture Reference)
+- **Author:** Matt Busel (mattbusel)
+- **Repository:** https://github.com/mattbusel/tokio-prompt-orchestrator
+- **What we used:** DAG pipeline pattern with bounded channels, circuit breaker, request deduplication, and backpressure handling. Adapted from LLM inference orchestration to kova C2 distributed job queue for training/generation across GPU nodes.
