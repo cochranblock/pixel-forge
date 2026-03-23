@@ -20,7 +20,7 @@ enum Cmd {
         /// What to generate: "knight idle", "potion red", "tree oak"
         prompt: String,
         /// Output size in pixels (square). Default 32.
-        #[arg(short, long, default_value_t = 32)]
+        #[arg(short, long, default_value_t = 16)]
         size: u32,
         /// Number of animation frames. 1 = static sprite.
         #[arg(short, long, default_value_t = 1)]
@@ -121,6 +121,9 @@ enum Cmd {
         /// Use MediumUNet (Quench) model architecture.
         #[arg(long)]
         medium: bool,
+        /// Seed for deterministic generation. Same seed = same sprite.
+        #[arg(long)]
+        seed: Option<u64>,
     },
     /// Record a swipe (good/bad) on a generated sprite for Judge training.
     Swipe {
@@ -506,6 +509,7 @@ fn main() -> anyhow::Result<()> {
             palette: palette_name,
             output,
             medium,
+            seed,
         } => {
             let class_names = [
                 "character", "weapon", "potion", "terrain", "enemy",
@@ -520,9 +524,9 @@ fn main() -> anyhow::Result<()> {
 
             let pal = palette::load_palette(&palette_name)?;
             let raw_images = if medium {
-                train::sample_medium(&model, class_id, size, count, steps)?
+                train::sample_medium_seeded(&model, class_id, size, count, steps, seed)?
             } else {
-                train::sample(&model, class_id, size, count, steps)?
+                train::sample_seeded(&model, class_id, size, count, steps, seed)?
             };
 
             let processed: Vec<image::RgbaImage> = raw_images
