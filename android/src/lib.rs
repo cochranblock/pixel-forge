@@ -4,8 +4,10 @@
 
 use android_activity::AndroidApp;
 
-/// Bundled Cinder model (TinyUNet, 4.2 MB → 2.1 MB as f16).
+/// Bundled Cinder model (TinyUNet, 4.2 MB).
 const CINDER_MODEL: &[u8] = include_bytes!("../../pixel-forge-cinder.safetensors");
+/// Bundled Quench model (MediumUNet, 22 MB).
+const QUENCH_MODEL: &[u8] = include_bytes!("../../pixel-forge-quench.safetensors");
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -20,12 +22,17 @@ fn android_main(app: AndroidApp) {
     unsafe { std::env::set_var("HOME", &data_dir) };
     log::info!("HOME={}", data_dir.display());
 
-    // Extract bundled Cinder model on first launch (Quench is download-on-demand)
-    let cinder_dest = data_dir.join("pixel-forge-cinder.safetensors");
-    if !cinder_dest.exists() {
-        log::info!("extracting cinder model ({} bytes)...", CINDER_MODEL.len());
-        if let Err(e) = std::fs::write(&cinder_dest, CINDER_MODEL) {
-            log::error!("failed to extract cinder: {e}");
+    // Extract bundled models on first launch
+    for (name, bytes) in [
+        ("pixel-forge-cinder.safetensors", CINDER_MODEL),
+        ("pixel-forge-quench.safetensors", QUENCH_MODEL),
+    ] {
+        let dest = data_dir.join(name);
+        if !dest.exists() {
+            log::info!("extracting {} ({} bytes)...", name, bytes.len());
+            if let Err(e) = std::fs::write(&dest, bytes) {
+                log::error!("failed to extract {}: {e}", name);
+            }
         }
     }
 
