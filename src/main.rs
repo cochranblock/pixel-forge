@@ -20,7 +20,7 @@ enum Cmd {
         /// What to generate: "knight idle", "potion red", "tree oak"
         prompt: String,
         /// Output size in pixels (square). Default 32.
-        #[arg(short, long, default_value_t = 16)]
+        #[arg(short, long, default_value_t = 32)]
         size: u32,
         /// Number of animation frames. 1 = static sprite.
         #[arg(short, long, default_value_t = 1)]
@@ -37,7 +37,7 @@ enum Cmd {
         /// Theme: "dungeon", "forest", "cave", "village", "space"
         theme: String,
         /// Tile size in pixels (square). Default 16.
-        #[arg(short, long, default_value_t = 16)]
+        #[arg(short, long, default_value_t = 32)]
         size: u32,
         /// Number of tile variations. Default 16.
         #[arg(short, long, default_value_t = 16)]
@@ -72,7 +72,7 @@ enum Cmd {
         #[arg(short, long, default_value_t = 1e-3)]
         lr: f64,
         /// Image size (square). Must match training data.
-        #[arg(long, default_value_t = 16)]
+        #[arg(long, default_value_t = 32)]
         img_size: u32,
         /// Use MediumUNet (~5.8M params) instead of TinyUNet (~1.1M params).
         #[arg(long)]
@@ -93,7 +93,7 @@ enum Cmd {
         #[arg(short, long, default_value = "data")]
         output: String,
         /// Target tile size (square).
-        #[arg(long, default_value_t = 16)]
+        #[arg(long, default_value_t = 32)]
         size: u32,
     },
     /// Generate pixel art using a trained model (no SD required).
@@ -104,7 +104,7 @@ enum Cmd {
         #[arg(short, long, default_value = "pixel-forge-cinder.safetensors")]
         model: String,
         /// Output size in pixels (must match training size).
-        #[arg(short, long, default_value_t = 16)]
+        #[arg(short, long, default_value_t = 32)]
         size: u32,
         /// Number of images to generate.
         #[arg(short, long, default_value_t = 1)]
@@ -253,7 +253,7 @@ enum Cmd {
         /// Class to generate: character, weapon, potion, terrain, enemy, etc.
         class: String,
         /// Output size in pixels (must match training size).
-        #[arg(short, long, default_value_t = 16)]
+        #[arg(short, long, default_value_t = 32)]
         size: u32,
         /// Number of images to generate.
         #[arg(short, long, default_value_t = 1)]

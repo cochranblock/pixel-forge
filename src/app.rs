@@ -732,7 +732,7 @@ fn generate_for_display(
     palette_name: &str,
 ) -> anyhow::Result<GenResult> {
     let pal = palette::load_palette(palette_name)?;
-    let img_size = 16u32;
+    let img_size = 32u32;
 
     let model_path = tier.model_path();
     let (actual_tier, actual_file) = if model_path.exists() {
@@ -773,7 +773,7 @@ fn cascade_for_display(
     palette_name: &str,
 ) -> anyhow::Result<GenResult> {
     let pal = palette::load_palette(palette_name)?;
-    let img_size = 16u32;
+    let img_size = 32u32;
 
     let cinder_path = device_cap::Tier::Cinder.model_path();
     let quench_path = device_cap::Tier::Quench.model_path();
