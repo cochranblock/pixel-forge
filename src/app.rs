@@ -292,54 +292,18 @@ impl eframe::App for PixelForgeApp {
             // Scrollable for small screens
             egui::ScrollArea::vertical().show(ui, |ui| {
 
-            // Header
+            // Header — clean, no technical info
             ui.vertical_centered(|ui| {
-                ui.add_space(16.0);
+                ui.add_space(20.0);
                 ui.label(egui::RichText::new("PIXEL FORGE").size(28.0).color(ACCENT).strong());
-                ui.label(egui::RichText::new("local AI sprite generator").size(13.0).color(TEXT_DIM));
-                ui.add_space(8.0);
+                ui.add_space(4.0);
             });
-
-            // Device info chip
-            if let Some(ref profile) = self.profile {
-                ui.vertical_centered(|ui| {
-                    let chip = format!("{} | {} MB | {}", profile.backend, profile.ram_mb, profile.tier);
-                    let label = egui::Label::new(
-                        egui::RichText::new(chip).size(11.0).color(TEXT_DIM)
-                    );
-                    ui.add(label);
-                });
-            }
-
-            // Cluster info (desktop only)
-            #[cfg(not(target_os = "android"))]
-            {
-                let probing = *self.cluster_probing.lock().unwrap();
-                let cluster = self.cluster.lock().unwrap();
-                if probing {
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("probing cluster...").size(11.0).color(TEXT_DIM));
-                    });
-                } else if let Some(ref cs) = *cluster {
-                    let active = cs.active_nodes().len();
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.use_cluster, "");
-                        if self.use_cluster {
-                            ui.label(egui::RichText::new(
-                                format!("cluster: {} nodes | {:.0} spr/s", active, cs.total_throughput)
-                            ).size(11.0).color(ACCENT));
-                        } else {
-                            ui.label(egui::RichText::new("local only").size(11.0).color(TEXT_DIM));
-                        }
-                    });
-                }
-            }
 
             if let Some(ref err) = self.profile_error {
                 ui.colored_label(egui::Color32::from_rgb(255, 80, 80), format!("error: {err}"));
             }
 
-            ui.add_space(16.0);
+            ui.add_space(12.0);
 
             // Prompt input
             ui.group(|ui| {
@@ -465,6 +429,40 @@ impl eframe::App for PixelForgeApp {
                         ui.add(egui::Slider::new(&mut self.gen_steps, 10..=100).text(""));
                     });
                 });
+
+                ui.add_space(4.0);
+
+                // Device info (was at top, now in advanced)
+                if let Some(ref profile) = self.profile {
+                    ui.vertical_centered(|ui| {
+                        let chip = format!("{} | {} MB | {}", profile.backend, profile.ram_mb, profile.tier);
+                        ui.label(egui::RichText::new(chip).size(10.0).color(TEXT_DIM));
+                    });
+                }
+
+                // Cluster info (desktop only)
+                #[cfg(not(target_os = "android"))]
+                {
+                    let probing = *self.cluster_probing.lock().unwrap();
+                    let cluster = self.cluster.lock().unwrap();
+                    if probing {
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("probing cluster...").size(10.0).color(TEXT_DIM));
+                        });
+                    } else if let Some(ref cs) = *cluster {
+                        let active = cs.active_nodes().len();
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.use_cluster, "");
+                            if self.use_cluster {
+                                ui.label(egui::RichText::new(
+                                    format!("cluster: {} nodes | {:.0} spr/s", active, cs.total_throughput)
+                                ).size(10.0).color(ACCENT));
+                            } else {
+                                ui.label(egui::RichText::new("local only").size(10.0).color(TEXT_DIM));
+                            }
+                        });
+                    }
+                }
             }
 
             ui.add_space(16.0);
