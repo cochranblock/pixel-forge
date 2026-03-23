@@ -694,28 +694,27 @@ pub fn sample_seeded(
         let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
 
         for step in 0..steps {
-            // Use cosine schedule to match training
-            let t_now = 1.0 - (step as f32 / steps as f32);
-            let t_next = 1.0 - ((step + 1) as f32 / steps as f32);
-            let alpha_now = cosine_schedule(t_now);
-            let alpha_next = if step + 1 < steps { cosine_schedule(t_next) } else { 0.0 };
+            // Cosine schedule: amount of noise at this step (matches training)
+            let t_frac = 1.0 - (step as f32 / steps as f32);
+            let amount = cosine_schedule(t_frac);
+            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
+            let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
 
-            let t = Tensor::new(&[t_now], &device)?;
-            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
+            // Model predicts clean image from noisy input
+            let t = Tensor::new(&[amount], &device)?;
+            let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
 
-            // DDIM-style step: interpolate between noisy x and prediction
-            // using the actual alpha schedule values
-            let signal_rate = (1.0 - alpha_next as f64).sqrt();
-            let noise_rate = (alpha_next as f64).sqrt();
-            let pred_signal = (1.0 - alpha_now as f64).sqrt();
-            let pred_noise = (alpha_now as f64).sqrt();
-
-            // Extract predicted clean image and noise
-            let x0 = ((&x - (&pred * pred_noise)?)? * (1.0 / pred_signal))?;
-            let eps = ((&x - (&x0 * pred_signal)?)? * (1.0 / pred_noise.max(1e-8)))?;
-
-            // Reconstruct at next noise level
-            x = ((&x0 * signal_rate)? + (&eps * noise_rate)?)?;
+            // Reconstruct at next noise level:
+            // corrupt formula: noisy = clean * (1 - amount) + noise * amount
+            // So: noise = (x - pred_clean * (1 - amount)) / amount
+            // Next: x_next = pred_clean * (1 - next_amount) + noise * next_amount
+            if next_amount > 1e-6 {
+                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            } else {
+                // Last step: just use the predicted clean image
+                x = pred_clean;
+            }
         }
 
         images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
@@ -777,22 +776,20 @@ pub fn sample_medium_seeded(
         let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
 
         for step in 0..steps {
-            let t_now = 1.0 - (step as f32 / steps as f32);
-            let t_next = 1.0 - ((step + 1) as f32 / steps as f32);
-            let alpha_now = cosine_schedule(t_now);
-            let alpha_next = if step + 1 < steps { cosine_schedule(t_next) } else { 0.0 };
+            let t_frac = 1.0 - (step as f32 / steps as f32);
+            let amount = cosine_schedule(t_frac);
+            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
+            let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
 
-            let t = Tensor::new(&[t_now], &device)?;
-            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
+            let t = Tensor::new(&[amount], &device)?;
+            let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
 
-            let signal_rate = (1.0 - alpha_next as f64).sqrt();
-            let noise_rate = (alpha_next as f64).sqrt();
-            let pred_signal = (1.0 - alpha_now as f64).sqrt();
-            let pred_noise = (alpha_now as f64).sqrt();
-
-            let x0 = ((&x - (&pred * pred_noise)?)? * (1.0 / pred_signal))?;
-            let eps = ((&x - (&x0 * pred_signal)?)? * (1.0 / pred_noise.max(1e-8)))?;
-            x = ((&x0 * signal_rate)? + (&eps * noise_rate)?)?;
+            if next_amount > 1e-6 {
+                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            } else {
+                x = pred_clean;
+            }
         }
 
         images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
@@ -831,22 +828,20 @@ pub fn sample_anvil(
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
-            let t_now = 1.0 - (step as f32 / steps as f32);
-            let t_next = 1.0 - ((step + 1) as f32 / steps as f32);
-            let alpha_now = cosine_schedule(t_now);
-            let alpha_next = if step + 1 < steps { cosine_schedule(t_next) } else { 0.0 };
+            let t_frac = 1.0 - (step as f32 / steps as f32);
+            let amount = cosine_schedule(t_frac);
+            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
+            let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
 
-            let t = Tensor::new(&[t_now], &device)?;
-            let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
+            let t = Tensor::new(&[amount], &device)?;
+            let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
 
-            let signal_rate = (1.0 - alpha_next as f64).sqrt();
-            let noise_rate = (alpha_next as f64).sqrt();
-            let pred_signal = (1.0 - alpha_now as f64).sqrt();
-            let pred_noise = (alpha_now as f64).sqrt();
-
-            let x0 = ((&x - (&pred * pred_noise)?)? * (1.0 / pred_signal))?;
-            let eps = ((&x - (&x0 * pred_signal)?)? * (1.0 / pred_noise.max(1e-8)))?;
-            x = ((&x0 * signal_rate)? + (&eps * noise_rate)?)?;
+            if next_amount > 1e-6 {
+                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            } else {
+                x = pred_clean;
+            }
         }
 
         images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
