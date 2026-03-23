@@ -594,7 +594,7 @@ fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, dev
             // Hash seed + class + index for unique but deterministic noise
             let combined = s.wrapping_mul(2654435761) ^ (class_id as u64).wrapping_mul(40503) ^ (index as u64).wrapping_mul(65537);
             let mut rng = rand::rngs::StdRng::seed_from_u64(combined);
-            let vals: Vec<f32> = (0..3 * n * n).map(|_| rng.gen::<f32>()).collect();
+            let vals: Vec<f32> = (0..3 * n * n).map(|_| rng.r#gen::<f32>()).collect();
             Tensor::from_vec(vals, (1, 3, n, n), device)
         }
         None => {

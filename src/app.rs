@@ -255,7 +255,7 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER_DIM);
     visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT_DIM);
     // Slider track
-    visuals.widgets.inactive.rounding = egui::CornerRadius::same(4);
+    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(4);
     ctx.set_visuals(visuals);
 }
 
