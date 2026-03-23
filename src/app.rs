@@ -78,6 +78,8 @@ pub struct PixelForgeApp {
     last_rendered_version: u64,
     // Keyboard toggle for Android
     pub keyboard_requested: bool,
+    // Advanced settings toggle
+    show_advanced: bool,
     // Swipe review state
     swipe_store: crate::swipe_store::SwipeStore,
     swipe_index: usize,         // which sprite we're reviewing
@@ -98,6 +100,7 @@ impl Default for PixelForgeApp {
             selected_palette: 0, // stardew
             prompt_text: String::new(),
             keyboard_requested: false,
+            show_advanced: false,
             gen_mode: GenMode::Cascade,
             gen_count: 4,
             gen_steps: 40,
@@ -182,18 +185,18 @@ impl PixelForgeApp {
                         sheet_pixels: pixels, width: w, height: h, sprites_f32: Vec::new()
                     })
             } else {
+                // Auto-detect best pipeline, or use manual mode if advanced
                 match mode {
-                    GenMode::Cascade => {
-                        // Fall back to Cinder-only if Quench not available (mobile APK)
+                    GenMode::Cascade | GenMode::Quench => {
                         let quench_path = device_cap::Tier::Quench.model_path();
-                        if quench_path.exists() {
+                        let cinder_path = device_cap::Tier::Cinder.model_path();
+                        if mode == GenMode::Cascade && quench_path.exists() && cinder_path.exists() {
                             cascade_for_display(class_id, count, steps, &palette_name)
+                        } else if quench_path.exists() {
+                            generate_for_display(device_cap::Tier::Quench, class_id, count, steps, &palette_name)
                         } else {
                             generate_for_display(device_cap::Tier::Cinder, class_id, count, steps, &palette_name)
                         }
-                    }
-                    GenMode::Quench => {
-                        generate_for_display(device_cap::Tier::Quench, class_id, count, steps, &palette_name)
                     }
                     GenMode::Cinder => {
                         generate_for_display(device_cap::Tier::Cinder, class_id, count, steps, &palette_name)
@@ -416,39 +419,53 @@ impl eframe::App for PixelForgeApp {
 
             ui.add_space(8.0);
 
-            // Model mode selector
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                section_label(ui, "MODEL");
-                ui.horizontal(|ui| {
-                    for mode in [GenMode::Cinder, GenMode::Quench, GenMode::Cascade] {
-                        let selected = self.gen_mode == mode;
-                        if styled_button(ui, mode.label(), selected, egui::vec2(80.0, 32.0)) {
-                            self.gen_mode = mode;
+            // Advanced settings toggle
+            ui.horizontal(|ui| {
+                let toggle_text = if self.show_advanced { "hide advanced" } else { "advanced" };
+                if ui.add(egui::Button::new(
+                    egui::RichText::new(toggle_text).size(11.0).color(TEXT_DIM)
+                ).fill(egui::Color32::TRANSPARENT)).clicked() {
+                    self.show_advanced = !self.show_advanced;
+                }
+            });
+
+            if self.show_advanced {
+                ui.add_space(4.0);
+
+                // Model mode selector
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    section_label(ui, "MODEL");
+                    ui.horizontal(|ui| {
+                        for mode in [GenMode::Cinder, GenMode::Quench, GenMode::Cascade] {
+                            let selected = self.gen_mode == mode;
+                            if styled_button(ui, mode.label(), selected, egui::vec2(80.0, 32.0)) {
+                                self.gen_mode = mode;
+                            }
                         }
-                    }
+                    });
+                    ui.label(egui::RichText::new(self.gen_mode.desc()).size(10.0).color(
+                        egui::Color32::from_rgb(80, 80, 100)
+                    ));
                 });
-                ui.label(egui::RichText::new(self.gen_mode.desc()).size(10.0).color(
-                    egui::Color32::from_rgb(80, 80, 100)
-                ));
-            });
 
-            ui.add_space(8.0);
+                ui.add_space(4.0);
 
-            // Controls
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                section_label(ui, "SETTINGS");
-                let max_count = if self.use_cluster { 64 } else { 16 };
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("count").size(12.0).color(TEXT_DIM));
-                    ui.add(egui::Slider::new(&mut self.gen_count, 1..=max_count).text(""));
+                // Controls
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    section_label(ui, "SETTINGS");
+                    let max_count = if self.use_cluster { 64 } else { 16 };
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("count").size(12.0).color(TEXT_DIM));
+                        ui.add(egui::Slider::new(&mut self.gen_count, 1..=max_count).text(""));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("steps").size(12.0).color(TEXT_DIM));
+                        ui.add(egui::Slider::new(&mut self.gen_steps, 10..=100).text(""));
+                    });
                 });
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("steps").size(12.0).color(TEXT_DIM));
-                    ui.add(egui::Slider::new(&mut self.gen_steps, 10..=100).text(""));
-                });
-            });
+            }
 
             ui.add_space(16.0);
 
