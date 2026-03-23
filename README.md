@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/store/play-store-icon.png" alt="Pixel Forge" width="192">
+  <img src="assets/pixel-forge-logo.png" alt="Pixel Forge" width="256">
 </p>
 
 # Pixel Forge v0.5.0

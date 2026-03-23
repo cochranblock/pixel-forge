@@ -1,1 +1,2 @@
 /data/dataset.bin.zst filter=lfs diff=lfs merge=lfs -text
+/assets/pixel-forge-logo.png filter=lfs diff=lfs merge=lfs -text
