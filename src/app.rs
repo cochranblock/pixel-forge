@@ -221,9 +221,11 @@ impl PixelForgeApp {
     }
 }
 
-/// Brand colors — dark forge + cochranblock cyber blue.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 217, 255); // #00d9ff cochranblock
+/// Brand colors — dark forge, cyan sparks + orange heat (matches logo).
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 217, 255); // #00d9ff cyan sparks
 const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(0, 150, 180); // muted cyan
+const FORGE_HOT: egui::Color32 = egui::Color32::from_rgb(255, 120, 20); // anvil ember orange
+const FORGE_DIM: egui::Color32 = egui::Color32::from_rgb(180, 80, 10); // muted ember
 const BG_DARK: egui::Color32 = egui::Color32::from_rgb(12, 12, 18); // matches icon bg
 const BG_CARD: egui::Color32 = egui::Color32::from_rgb(20, 20, 28);
 const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 120, 140);
@@ -232,7 +234,7 @@ const BTN_BG: egui::Color32 = egui::Color32::from_rgb(30, 30, 42);
 const BTN_HOVER: egui::Color32 = egui::Color32::from_rgb(35, 42, 52);
 const BTN_SELECTED: egui::Color32 = egui::Color32::from_rgb(0, 217, 255); // #00d9ff
 const BORDER_DIM: egui::Color32 = egui::Color32::from_rgb(30, 40, 50);
-const EMBER: egui::Color32 = egui::Color32::from_rgb(10, 35, 50); // subtle cool tint
+const EMBER: egui::Color32 = egui::Color32::from_rgb(40, 18, 5); // warm dark tint
 
 fn apply_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
@@ -464,19 +466,19 @@ impl eframe::App for PixelForgeApp {
                     "FORGE"
                 };
 
-                let (btn_color, text_color) = if generating {
-                    (EMBER, ACCENT)
+                let (btn_color, text_color, stroke_color) = if generating {
+                    (EMBER, FORGE_HOT, FORGE_DIM)
                 } else if can_generate {
-                    (ACCENT, egui::Color32::WHITE)
+                    (FORGE_HOT, egui::Color32::WHITE, FORGE_DIM)
                 } else {
-                    (BTN_BG, TEXT_DIM)
+                    (BTN_BG, TEXT_DIM, BTN_BG)
                 };
 
                 let btn = egui::Button::new(
                     egui::RichText::new(label).size(22.0).color(text_color).strong()
                 )
                     .fill(btn_color)
-                    .stroke(egui::Stroke::new(if can_generate { 2.0 } else { 0.0 }, ACCENT_DIM))
+                    .stroke(egui::Stroke::new(if can_generate { 2.0 } else { 0.0 }, stroke_color))
                     .corner_radius(egui::CornerRadius::same(14))
                     .min_size(egui::vec2(300.0, 60.0));
 
