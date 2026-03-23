@@ -694,14 +694,31 @@ pub fn sample_seeded(
         let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
 
         for step in 0..steps {
-            let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            // Use cosine schedule to match training
+            let t_now = 1.0 - (step as f32 / steps as f32);
+            let t_next = 1.0 - ((step + 1) as f32 / steps as f32);
+            let alpha_now = cosine_schedule(t_now);
+            let alpha_next = if step + 1 < steps { cosine_schedule(t_next) } else { 0.0 };
+
+            let t = Tensor::new(&[t_now], &device)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
-            let mix = 1.0 / (steps - step) as f64;
-            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+
+            // DDIM-style step: interpolate between noisy x and prediction
+            // using the actual alpha schedule values
+            let signal_rate = (1.0 - alpha_next as f64).sqrt();
+            let noise_rate = (alpha_next as f64).sqrt();
+            let pred_signal = (1.0 - alpha_now as f64).sqrt();
+            let pred_noise = (alpha_now as f64).sqrt();
+
+            // Extract predicted clean image and noise
+            let x0 = ((&x - (&pred * pred_noise)?)? * (1.0 / pred_signal))?;
+            let eps = ((&x - (&x0 * pred_signal)?)? * (1.0 / pred_noise.max(1e-8)))?;
+
+            // Reconstruct at next noise level
+            x = ((&x0 * signal_rate)? + (&eps * noise_rate)?)?;
         }
 
-        images.push(tensor_to_rgba(&x, img_size)?);
+        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -760,14 +777,25 @@ pub fn sample_medium_seeded(
         let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
 
         for step in 0..steps {
-            let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            let t_now = 1.0 - (step as f32 / steps as f32);
+            let t_next = 1.0 - ((step + 1) as f32 / steps as f32);
+            let alpha_now = cosine_schedule(t_now);
+            let alpha_next = if step + 1 < steps { cosine_schedule(t_next) } else { 0.0 };
+
+            let t = Tensor::new(&[t_now], &device)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
-            let mix = 1.0 / (steps - step) as f64;
-            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+
+            let signal_rate = (1.0 - alpha_next as f64).sqrt();
+            let noise_rate = (alpha_next as f64).sqrt();
+            let pred_signal = (1.0 - alpha_now as f64).sqrt();
+            let pred_noise = (alpha_now as f64).sqrt();
+
+            let x0 = ((&x - (&pred * pred_noise)?)? * (1.0 / pred_signal))?;
+            let eps = ((&x - (&x0 * pred_signal)?)? * (1.0 / pred_noise.max(1e-8)))?;
+            x = ((&x0 * signal_rate)? + (&eps * noise_rate)?)?;
         }
 
-        images.push(tensor_to_rgba(&x, img_size)?);
+        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -803,14 +831,25 @@ pub fn sample_anvil(
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
-            let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
+            let t_now = 1.0 - (step as f32 / steps as f32);
+            let t_next = 1.0 - ((step + 1) as f32 / steps as f32);
+            let alpha_now = cosine_schedule(t_now);
+            let alpha_next = if step + 1 < steps { cosine_schedule(t_next) } else { 0.0 };
+
+            let t = Tensor::new(&[t_now], &device)?;
             let pred = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
-            let mix = 1.0 / (steps - step) as f64;
-            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+
+            let signal_rate = (1.0 - alpha_next as f64).sqrt();
+            let noise_rate = (alpha_next as f64).sqrt();
+            let pred_signal = (1.0 - alpha_now as f64).sqrt();
+            let pred_noise = (alpha_now as f64).sqrt();
+
+            let x0 = ((&x - (&pred * pred_noise)?)? * (1.0 / pred_signal))?;
+            let eps = ((&x - (&x0 * pred_signal)?)? * (1.0 / pred_noise.max(1e-8)))?;
+            x = ((&x0 * signal_rate)? + (&eps * noise_rate)?)?;
         }
 
-        images.push(tensor_to_rgba(&x, img_size)?);
+        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
