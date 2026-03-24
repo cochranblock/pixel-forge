@@ -278,7 +278,7 @@ pub fn curate(raw_dir: &str, output_dir: &str, target_size: u32) -> Result<()> {
 /// Try to detect tile size from sheet dimensions.
 fn detect_tile_size(w: u32, h: u32, _target: u32) -> u32 {
     // Common tile sizes, prefer ones matching or close to target
-    let candidates = [16, 32, 24, 48, 64, 8];
+    let candidates = [32, 16, 24, 48, 64, 8];
     for &size in &candidates {
         if w % size == 0 && h % size == 0 && w / size >= 2 {
             return size;

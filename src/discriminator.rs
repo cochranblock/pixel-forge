@@ -10,32 +10,36 @@ use candle_nn::{self as nn, Optimizer, VarBuilder, VarMap};
 use image::RgbaImage;
 use std::path::Path;
 
-/// Discriminator architecture: 16x16x3 → score ∈ [0,1]
+/// Discriminator architecture: 32x32x3 → score ∈ [0,1]
 /// 1.0 = looks like real pixel art, 0.0 = looks like AI output
 pub struct Discriminator {
     conv1: nn::Conv2d,
     conv2: nn::Conv2d,
     conv3: nn::Conv2d,
+    conv4: nn::Conv2d,
     gn1: nn::GroupNorm,
     gn2: nn::GroupNorm,
     gn3: nn::GroupNorm,
+    gn4: nn::GroupNorm,
     fc1: nn::Linear,
     fc2: nn::Linear,
 }
 
 impl Discriminator {
     pub fn new(vb: VarBuilder) -> Result<Self> {
-        // 16x16x3 → 16x16x32 → 8x8x64 → 4x4x64 → FC128 → FC1
+        // 32x32x3 → 32x32x32 → 16x16x64 → 8x8x64 → 4x4x64 → FC128 → FC1
         let conv1 = nn::conv2d(3, 32, 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("c1"))?;
         let conv2 = nn::conv2d(32, 64, 3, nn::Conv2dConfig { padding: 1, stride: 2, ..Default::default() }, vb.pp("c2"))?;
         let conv3 = nn::conv2d(64, 64, 3, nn::Conv2dConfig { padding: 1, stride: 2, ..Default::default() }, vb.pp("c3"))?;
+        let conv4 = nn::conv2d(64, 64, 3, nn::Conv2dConfig { padding: 1, stride: 2, ..Default::default() }, vb.pp("c4"))?;
         let gn1 = nn::group_norm(8, 32, 1e-5, vb.pp("gn1"))?;
         let gn2 = nn::group_norm(8, 64, 1e-5, vb.pp("gn2"))?;
         let gn3 = nn::group_norm(8, 64, 1e-5, vb.pp("gn3"))?;
+        let gn4 = nn::group_norm(8, 64, 1e-5, vb.pp("gn4"))?;
         // 4x4x64 = 1024
         let fc1 = nn::linear(1024, 128, vb.pp("fc1"))?;
         let fc2 = nn::linear(128, 1, vb.pp("fc2"))?;
-        Ok(Self { conv1, conv2, conv3, gn1, gn2, gn3, fc1, fc2 })
+        Ok(Self { conv1, conv2, conv3, conv4, gn1, gn2, gn3, gn4, fc1, fc2 })
     }
 
     /// Score a batch. Returns (B,1) logits — apply sigmoid for probability.
@@ -50,6 +54,10 @@ impl Discriminator {
 
         let h = self.conv3.forward(&h)?;
         let h = self.gn3.forward(&h)?;
+        let h = nn::ops::silu(&h)?;
+
+        let h = self.conv4.forward(&h)?;
+        let h = self.gn4.forward(&h)?;
         let h = nn::ops::silu(&h)?;
 
         let (b, _, _, _) = h.dims4()?;
@@ -81,7 +89,7 @@ pub struct DiscriminatorTrainConfig {
     pub lr: f64,
 }
 
-/// Load images from a directory into a tensor (N, 3, 16, 16).
+/// Load images from a directory into a tensor (N, 3, 32, 32).
 fn load_images(dir: &str, device: &Device, max: usize) -> anyhow::Result<Tensor> {
     let mut pixels = Vec::new();
     let mut count = 0;
@@ -92,12 +100,12 @@ fn load_images(dir: &str, device: &Device, max: usize) -> anyhow::Result<Tensor>
         if path.extension().and_then(|e| e.to_str()) != Some("png") { continue; }
 
         let img = image::open(path)?.to_rgb8();
-        if img.width() != 16 || img.height() != 16 { continue; }
+        if img.width() != 32 || img.height() != 32 { continue; }
 
         // Channel-first, normalized to [0,1]
         for c in 0..3 {
-            for y in 0..16 {
-                for x in 0..16 {
+            for y in 0..32 {
+                for x in 0..32 {
                     pixels.push(img.get_pixel(x, y)[c] as f32 / 255.0);
                 }
             }
@@ -106,10 +114,10 @@ fn load_images(dir: &str, device: &Device, max: usize) -> anyhow::Result<Tensor>
     }
 
     if count == 0 {
-        anyhow::bail!("no 16x16 PNG images found in {dir}");
+        anyhow::bail!("no 32x32 PNG images found in {dir}");
     }
 
-    let tensor = Tensor::from_vec(pixels, (count, 3, 16, 16), device)?;
+    let tensor = Tensor::from_vec(pixels, (count, 3, 32, 32), device)?;
     Ok(tensor)
 }
 

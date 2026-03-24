@@ -1,6 +1,6 @@
 // Unlicense — cochranblock.org
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
-//! MediumUNet — 4x larger diffusion model for higher-quality 16×16 sprites.
+//! MediumUNet — 4x larger diffusion model for higher-quality 32×32 sprites.
 //! ~4.2M params (~16 MB). Same architecture as TinyUNet but wider channels
 //! and deeper ResBlocks.
 //!

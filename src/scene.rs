@@ -1,7 +1,7 @@
 // Unlicense — cochranblock.org
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
 //! Scene representation and rendering for 8×8 sprite grids.
-//! 128×128 pixels (8×8 cells × 16×16 sprites).
+//! 256×256 pixels (8×8 cells × 32×32 sprites).
 //!
 //! SceneGrid is the core data structure shared between the Combiner model
 //! and the rendering/UI layers. Rule-seeded generation creates bootstrap
@@ -17,8 +17,8 @@ use crate::tiny_unet::NUM_CLASSES;
 pub const GRID_W: usize = 8;
 pub const GRID_H: usize = 8;
 pub const GRID_CELLS: usize = GRID_W * GRID_H; // 64
-pub const CELL_PX: u32 = 16;
-pub const SCENE_PX: u32 = GRID_W as u32 * CELL_PX; // 128
+pub const CELL_PX: u32 = 32;
+pub const SCENE_PX: u32 = GRID_W as u32 * CELL_PX; // 256
 
 /// Empty cell class ID — one past the real classes.
 pub const EMPTY_CLASS: u32 = NUM_CLASSES as u32; // 15
@@ -161,8 +161,8 @@ impl SceneGrid {
         (grid, masked)
     }
 
-    /// Render the scene to a 128×128 RGBA image.
-    /// `sprite_lookup`: given (class_id), returns 16×16 RGB channel-first pixels,
+    /// Render the scene to a 256×256 RGBA image.
+    /// `sprite_lookup`: given (class_id), returns 32×32 RGB channel-first pixels,
     /// or None to leave the cell transparent.
     pub fn render<F>(&self, mut sprite_lookup: F) -> RgbaImage
     where

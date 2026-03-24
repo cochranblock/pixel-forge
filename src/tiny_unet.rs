@@ -1,7 +1,7 @@
 // Unlicense — cochranblock.org
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
-//! Tiny UNet for 16x16 / 32x32 pixel art diffusion.
-//! Architecture inspired by PixelGen16x16 (MIT, Anouar Khaldi 2025)
+//! Tiny UNet for 32x32 pixel art diffusion.
+//! Architecture inspired by PixelGen (MIT, Anouar Khaldi 2025)
 //! and pixartdiffusion (Zak Buzzard 2023).
 //! Rewritten from scratch in Rust/Candle — no Python code was copied.
 //!
@@ -12,7 +12,7 @@ use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::{self as nn, VarBuilder, VarMap};
 
 /// Channel config per resolution level.
-/// 16x16 input → 8x8 → 4x4
+/// 32x32 input → 16x16 → 8x8
 const CHANNELS: [usize; 3] = [32, 64, 64];
 
 /// Number of class labels for conditioning.

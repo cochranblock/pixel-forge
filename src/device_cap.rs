@@ -93,9 +93,9 @@ pub struct DeviceProfile {
     pub backend: Backend,
     /// System RAM in MB.
     pub ram_mb: u64,
-    /// Time in ms to run one Cinder inference pass (16x16, 1 step).
+    /// Time in ms to run one Cinder inference pass (32x32, 1 step).
     pub cinder_ms: f64,
-    /// Time in ms to run one Quench inference pass (16x16, 1 step), if tested.
+    /// Time in ms to run one Quench inference pass (32x32, 1 step), if tested.
     pub quench_ms: Option<f64>,
     /// Selected tier based on benchmarks.
     pub tier: Tier,
@@ -275,7 +275,7 @@ fn bench_cinder(device: &Device) -> Result<f64> {
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let model = TinyUNet::new(vb)?;
 
-    let x = Tensor::rand(0f32, 1f32, (1, 3, 16, 16), device)?;
+    let x = Tensor::rand(0f32, 1f32, (1, 3, 32, 32), device)?;
     let t = Tensor::new(&[0.5f32], device)?;
     let c = Tensor::new(&[0u32], device)?;
 
@@ -300,7 +300,7 @@ fn bench_quench(device: &Device) -> Result<f64> {
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let model = MediumUNet::new(vb)?;
 
-    let x = Tensor::rand(0f32, 1f32, (1, 3, 16, 16), device)?;
+    let x = Tensor::rand(0f32, 1f32, (1, 3, 32, 32), device)?;
     let t = Tensor::new(&[0.5f32], device)?;
     let c = Tensor::new(&[0u32], device)?;
 

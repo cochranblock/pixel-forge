@@ -127,7 +127,7 @@ enum Cmd {
     },
     /// Record a swipe (good/bad) on a generated sprite for Judge training.
     Swipe {
-        /// Path to the sprite image (16×16 PNG).
+        /// Path to the sprite image (32×32 PNG).
         image: String,
         /// "good" or "bad" (swipe right or left).
         verdict: String,
@@ -339,7 +339,7 @@ enum Cmd {
     },
     /// Sign an existing sprite with PoA — produce a Ghost Fabric packet.
     Sign {
-        /// Path to 16x16 PNG sprite.
+        /// Path to 32x32 PNG sprite.
         image: String,
         /// Class of the sprite.
         #[arg(short, long, default_value = "misc")]

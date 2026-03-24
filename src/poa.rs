@@ -2,12 +2,12 @@
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
 //! Proof of Artifacts (PoA) — cryptographic signing for generated pixel art.
 //!
-//! Signs the SHA-256 hash of a 16x16 pixel array + GPS coordinates using Ed25519.
+//! Signs the SHA-256 hash of a 32x32 pixel array + GPS coordinates using Ed25519.
 //! Produces a "Signed Heartbeat" packet under 255 bytes for Ghost Fabric LoRa TX.
 //!
 //! Packet layout (153 bytes):
 //!   [0]       version (1 byte)
-//!   [1..33]   artifact hash — SHA-256 of 16x16x3 pixel data (32 bytes)
+//!   [1..33]   artifact hash — SHA-256 of 32x32x3 pixel data (32 bytes)
 //!   [33..37]  class_id (4 bytes, little-endian u32)
 //!   [37..41]  quality_score (4 bytes, f32 LE)
 //!   [41..45]  latitude (4 bytes, f32 LE) — Dundalk default: 39.2504
@@ -109,11 +109,11 @@ impl GhostPacket {
     }
 }
 
-/// Hash a 16x16 RGBA sprite — SHA-256 over the raw RGB channels (768 bytes).
+/// Hash a 32x32 RGBA sprite — SHA-256 over the raw RGB channels (3072 bytes).
 pub fn hash_sprite(sprite: &RgbaImage) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    for y in 0..sprite.height().min(16) {
-        for x in 0..sprite.width().min(16) {
+    for y in 0..sprite.height().min(32) {
+        for x in 0..sprite.width().min(32) {
             let p = sprite.get_pixel(x, y);
             hasher.update(&[p[0], p[1], p[2]]);
         }
@@ -121,7 +121,7 @@ pub fn hash_sprite(sprite: &RgbaImage) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Hash raw pixel data (channel-first f32 array, 3*16*16 = 768 floats).
+/// Hash raw pixel data (channel-first f32 array, 3*32*32 = 3072 floats).
 pub fn hash_pixels(pixels: &[f32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for &v in pixels {
