@@ -58,6 +58,9 @@ pub struct TrainConfig {
     pub cosine_schedule: bool,
     /// Min-SNR loss weighting. 0.0 = disabled, 5.0 = recommended.
     pub min_snr_gamma: f64,
+    /// V-prediction: model predicts velocity (noise - clean) instead of clean image.
+    /// Improves training stability in high-noise regions.
+    pub v_prediction: bool,
 }
 
 impl Default for TrainConfig {
@@ -76,6 +79,7 @@ impl Default for TrainConfig {
             ema_decay: 0.9999,
             cosine_schedule: true,
             min_snr_gamma: 5.0,
+            v_prediction: false,
         }
     }
 }
@@ -379,15 +383,57 @@ fn hflip(px: &mut [f32], img_size: u32) {
 }
 
 /// Corrupt: x_noisy = x * (1 - amount) + noise * amount
-fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<Tensor> {
+/// Returns (noisy, noise) so v-prediction can compute targets.
+fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<(Tensor, Tensor)> {
     let noise = Tensor::rand(0f32, 1f32, x.shape(), device)?;
     let a = amount.unsqueeze(1)?.unsqueeze(2)?.unsqueeze(3)?;
     let one_minus_a = (1.0f64 - &a)?;
-    x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?
+    let noisy = (x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?)?;
+    Ok((noisy, noise))
+}
+
+/// Save model weights with optional v_pred marker tensor.
+/// When v_prediction is true, a "v_pred_marker" tensor (single f32 = 1.0) is
+/// embedded in the safetensors file so sampling auto-detects the prediction mode.
+fn save_with_marker(varmap: &VarMap, path: &str, v_prediction: bool) -> Result<()> {
+    if !v_prediction {
+        varmap.save(path)?;
+        return Ok(());
+    }
+    // Collect all varmap tensors + the marker
+    let mut tensors = std::collections::HashMap::new();
+    let data = varmap.data().lock().unwrap();
+    for (name, var) in data.iter() {
+        tensors.insert(name.clone(), var.as_tensor().clone());
+    }
+    drop(data);
+    let marker = Tensor::new(&[1.0f32], &Device::Cpu)?;
+    tensors.insert("v_pred_marker".into(), marker);
+    candle_core::safetensors::save(&tensors, path)?;
+    Ok(())
+}
+
+/// Detect whether a safetensors model was trained with v-prediction
+/// by checking for the "v_pred_marker" tensor in the file header.
+pub fn detect_v_pred(path: &str) -> bool {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    if data.len() < 8 { return false; }
+    let header_len = match data[..8].try_into().ok().map(u64::from_le_bytes) {
+        Some(n) => n as usize,
+        None => return false,
+    };
+    let header_str = match std::str::from_utf8(data.get(8..8 + header_len).unwrap_or(&[])) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    header_str.contains("v_pred_marker")
 }
 
 /// Train loop — works with any DiffusionModel (Tiny, Medium, Anvil).
-/// Supports CFG, EMA, cosine noise schedule, and min-SNR weighting.
+/// Supports CFG, EMA, cosine noise schedule, min-SNR weighting, and v-prediction.
 fn train_inner(
     model: &dyn DiffusionModel,
     varmap: &VarMap,
@@ -420,7 +466,8 @@ fn train_inner(
 
     println!("training: {} epochs, bs={}, lr={}, {} samples", config.epochs, config.batch_size, config.lr, n);
     println!("augmentation: palette swap + h-flip (50% each)");
-    println!("schedule: {sched} | {cfg_info} | ema={} | min_snr={}", config.ema, config.min_snr_gamma);
+    let pred_mode = if config.v_prediction { "v-pred" } else { "clean-pred" };
+    println!("schedule: {sched} | {cfg_info} | ema={} | min_snr={} | {pred_mode}", config.ema, config.min_snr_gamma);
 
     let t0 = std::time::Instant::now();
     let sz = config.img_size as usize;
@@ -479,10 +526,18 @@ fn train_inner(
                 noise_raw
             };
 
-            let noisy_x = corrupt(&x_batch, &noise_amount, device)?;
+            let (noisy_x, noise) = corrupt(&x_batch, &noise_amount, device)?;
 
             let pred = model.forward(&noisy_x, &noise_amount, &y_batch)?;
-            let per_sample_loss = (&pred - &x_batch)?.sqr()?;
+
+            // V-prediction: target = noise - clean (direction from clean to noise)
+            // Clean-prediction: target = clean image
+            let target = if config.v_prediction {
+                (&noise - &x_batch)?
+            } else {
+                x_batch.clone()
+            };
+            let per_sample_loss = (&pred - &target)?.sqr()?;
 
             // Min-SNR weighting
             let loss = if config.min_snr_gamma > 0.0 {
@@ -521,12 +576,12 @@ fn train_inner(
             if let Some(ref ema) = ema {
                 let originals = ema.swap_in(varmap);
                 let cp = format!("{}.epoch{}", config.output, epoch + 1);
-                varmap.save(&cp)?;
+                save_with_marker(varmap, &cp, config.v_prediction)?;
                 println!("  checkpoint (ema): {cp}");
                 EmaWeights::swap_out(&originals, varmap);
             } else {
                 let cp = format!("{}.epoch{}", config.output, epoch + 1);
-                varmap.save(&cp)?;
+                save_with_marker(varmap, &cp, config.v_prediction)?;
                 println!("  checkpoint: {cp}");
             }
         }
@@ -539,7 +594,7 @@ fn train_inner(
     } else {
         println!("saving model to {}...", config.output);
     }
-    varmap.save(&config.output)?;
+    save_with_marker(varmap, &config.output, config.v_prediction)?;
 
     let file_size = std::fs::metadata(&config.output)?.len();
     println!("done: {} ({:.1} MB) in {:.0}s total",
@@ -764,18 +819,18 @@ pub fn sample_seeded(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = TinyUNet::with_classes(vb, n_classes)?;
+    let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
     let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
     let params = TinyUNet::param_count(&varmap);
-    println!("model: {} params, sampling {} images, {steps} steps, cfg={}", params, count, cfg_scale);
+    let pred_tag = if is_v_pred { ", v-pred" } else { "" };
+    println!("model: {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);
 
-    let class_tensor = Tensor::new(&[class_id.min((n_classes - 1) as u32)], &device)?;
-    let null_class = if has_null_class {
-        Tensor::new(&[CFG_NULL_CLASS], &device)?
-    } else {
-        Tensor::new(&[0u32], &device)?
-    };
+    let cid_val = class_id.min((n_classes - 1) as u32);
+    let null_val = if has_null_class { CFG_NULL_CLASS } else { 0u32 };
+    let class_tensor = Tensor::new(&vec![cid_val; count as usize][..], &device)?;
+    let null_class = Tensor::new(&vec![null_val; count as usize][..], &device)?;
 
     // Try loading skeleton for this class
     let skeleton = load_skeleton("data", class_id, img_size, &device)
@@ -787,38 +842,55 @@ pub fn sample_seeded(
         println!("  seed: {s}");
     }
 
-    let mut images = Vec::new();
-    for i in 0..count {
-        let mut x = if let Some(ref skel) = skeleton {
-            skeleton_start(skel, seed, class_id, i, img_size, &device)?
+    // Build initial noise for each sprite, then stack into (count, 3, H, W)
+    let init_tensors: Vec<Tensor> = (0..count)
+        .map(|i| {
+            let single = if let Some(ref skel) = skeleton {
+                skeleton_start(skel, seed, class_id, i, img_size, &device)
+            } else {
+                seeded_noise(seed, class_id, i, img_size, &device)
+            };
+            single.and_then(|t| t.squeeze(0)) // (1,3,H,W) -> (3,H,W)
+        })
+        .collect::<candle_core::Result<Vec<_>>>()?;
+    let mut x = Tensor::stack(&init_tensors, 0)?; // (count, 3, H, W)
+
+    // When using skeleton, start schedule at SKELETON_NOISE instead of 1.0
+    let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+
+    for step in 0..steps {
+        let frac = step as f32 / steps as f32; // 0.0 -> 1.0
+        let amount = start_noise * (1.0 - frac); // ramp from start_noise -> 0
+        let next_amount = if step + 1 < steps {
+            start_noise * (1.0 - (step + 1) as f32 / steps as f32)
         } else {
-            seeded_noise(seed, class_id, i, img_size, &device)?
+            0.0
         };
 
-        // When using skeleton, start schedule at SKELETON_NOISE instead of 1.0
-        let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+        let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
+        let raw_out = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
 
-        for step in 0..steps {
-            let frac = step as f32 / steps as f32; // 0.0 → 1.0
-            let amount = start_noise * (1.0 - frac); // ramp from start_noise → 0
-            let next_amount = if step + 1 < steps {
-                start_noise * (1.0 - (step + 1) as f32 / steps as f32)
-            } else {
-                0.0
-            };
+        // V-pred: clean = noisy - amount * v_pred
+        let pred_clean = if is_v_pred {
+            (&x - (raw_out * amount as f64)?)?
+        } else {
+            raw_out
+        };
 
-            let t = Tensor::new(&[amount], &device)?;
-            let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
-
-            if next_amount > 1e-6 {
-                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
-                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
-            } else {
-                x = pred_clean;
-            }
+        if next_amount > 1e-6 {
+            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+        } else {
+            x = pred_clean;
         }
+    }
 
-        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
+    // Split batch back into individual sprites
+    let x = x.clamp(0.0, 1.0)?;
+    let mut images = Vec::new();
+    for i in 0..count {
+        let single = x.narrow(0, i as usize, 1)?; // (1, 3, H, W)
+        images.push(tensor_to_rgba(&single, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -855,18 +927,18 @@ pub fn sample_medium_seeded(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = MediumUNet::with_classes(vb, n_classes)?;
+    let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
     let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
     let params = MediumUNet::param_count(&varmap);
-    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}", params, count, cfg_scale);
+    let pred_tag = if is_v_pred { ", v-pred" } else { "" };
+    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);
 
-    let class_tensor = Tensor::new(&[class_id.min((n_classes - 1) as u32)], &device)?;
-    let null_class = if has_null_class {
-        Tensor::new(&[CFG_NULL_CLASS], &device)?
-    } else {
-        Tensor::new(&[0u32], &device)?
-    };
+    let cid_val = class_id.min((n_classes - 1) as u32);
+    let null_val = if has_null_class { CFG_NULL_CLASS } else { 0u32 };
+    let class_tensor = Tensor::new(&vec![cid_val; count as usize][..], &device)?;
+    let null_class = Tensor::new(&vec![null_val; count as usize][..], &device)?;
 
     let skeleton = load_skeleton("data", class_id, img_size, &device)
         .or_else(|| load_skeleton("data_v2_32", class_id, img_size, &device));
@@ -877,37 +949,54 @@ pub fn sample_medium_seeded(
         println!("  seed: {s}");
     }
 
-    let mut images = Vec::new();
-    for i in 0..count {
-        let mut x = if let Some(ref skel) = skeleton {
-            skeleton_start(skel, seed, class_id, i, img_size, &device)?
+    // Build initial noise for each sprite, then stack into (count, 3, H, W)
+    let init_tensors: Vec<Tensor> = (0..count)
+        .map(|i| {
+            let single = if let Some(ref skel) = skeleton {
+                skeleton_start(skel, seed, class_id, i, img_size, &device)
+            } else {
+                seeded_noise(seed, class_id, i, img_size, &device)
+            };
+            single.and_then(|t| t.squeeze(0)) // (1,3,H,W) -> (3,H,W)
+        })
+        .collect::<candle_core::Result<Vec<_>>>()?;
+    let mut x = Tensor::stack(&init_tensors, 0)?; // (count, 3, H, W)
+
+    let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+
+    for step in 0..steps {
+        let frac = step as f32 / steps as f32;
+        let amount = start_noise * (1.0 - frac);
+        let next_amount = if step + 1 < steps {
+            start_noise * (1.0 - (step + 1) as f32 / steps as f32)
         } else {
-            seeded_noise(seed, class_id, i, img_size, &device)?
+            0.0
         };
 
-        let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+        let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
+        let raw_out = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
 
-        for step in 0..steps {
-            let frac = step as f32 / steps as f32;
-            let amount = start_noise * (1.0 - frac);
-            let next_amount = if step + 1 < steps {
-                start_noise * (1.0 - (step + 1) as f32 / steps as f32)
-            } else {
-                0.0
-            };
+        // V-pred: clean = noisy - amount * v_pred
+        let pred_clean = if is_v_pred {
+            (&x - (raw_out * amount as f64)?)?
+        } else {
+            raw_out
+        };
 
-            let t = Tensor::new(&[amount], &device)?;
-            let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
-
-            if next_amount > 1e-6 {
-                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
-                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
-            } else {
-                x = pred_clean;
-            }
+        if next_amount > 1e-6 {
+            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+        } else {
+            x = pred_clean;
         }
+    }
 
-        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
+    // Split batch back into individual sprites
+    let x = x.clamp(0.0, 1.0)?;
+    let mut images = Vec::new();
+    for i in 0..count {
+        let single = x.narrow(0, i as usize, 1)?; // (1, 3, H, W)
+        images.push(tensor_to_rgba(&single, img_size)?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -930,10 +1019,12 @@ pub fn sample_anvil(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = AnvilUNet::new(vb)?;
+    let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
     let params = AnvilUNet::param_count(&varmap);
-    println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={}", params, count, DEFAULT_CFG_SCALE);
+    let pred_tag = if is_v_pred { ", v-pred" } else { "" };
+    println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, DEFAULT_CFG_SCALE);
 
     let class_tensor = Tensor::new(&[class_id], &device)?;
     let null_class = Tensor::new(&[CFG_NULL_CLASS], &device)?;
@@ -949,7 +1040,12 @@ pub fn sample_anvil(
             let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
 
             let t = Tensor::new(&[amount], &device)?;
-            let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
+            let raw_out = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
+            let pred_clean = if is_v_pred {
+                (&x - (raw_out * amount as f64)?)?
+            } else {
+                raw_out
+            };
 
             if next_amount > 1e-6 {
                 let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;

@@ -36,6 +36,8 @@ impl Default for CascadeConfig {
 }
 
 /// DDIM step: predict clean → extract noise → recompose at next noise level.
+/// When v_pred is true, the model output is velocity (noise - clean) and we
+/// recover clean via: clean = noisy - amount * v_pred.
 fn ddim_step(
     model: &dyn DiffusionModel,
     x: &Tensor,
@@ -45,9 +47,15 @@ fn ddim_step(
     null_class: &Tensor,
     cfg_scale: f64,
     device: &candle_core::Device,
+    v_pred: bool,
 ) -> candle_core::Result<Tensor> {
     let t = Tensor::new(&[amount], device)?;
-    let pred_clean = train::cfg_denoise(model, x, &t, class_tensor, null_class, cfg_scale)?;
+    let raw_out = train::cfg_denoise(model, x, &t, class_tensor, null_class, cfg_scale)?;
+    let pred_clean = if v_pred {
+        (x - (raw_out * amount as f64)?)?
+    } else {
+        raw_out
+    };
 
     if next_amount > 1e-6 {
         let noise = ((x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
@@ -77,6 +85,7 @@ pub fn cascade_sample(
     let mut quench_vm = VarMap::new();
     let quench_vb = VarBuilder::from_varmap(&quench_vm, DType::F32, &device);
     let quench = MediumUNet::with_classes(quench_vb, quench_classes)?;
+    let quench_v_pred = train::detect_v_pred(quench_path);
     crate::quantize::load_varmap(&mut quench_vm, quench_path)?;
 
     // Load Cinder (detail — runs second)
@@ -86,6 +95,7 @@ pub fn cascade_sample(
     let mut cinder_vm = VarMap::new();
     let cinder_vb = VarBuilder::from_varmap(&cinder_vm, DType::F32, &device);
     let cinder = TinyUNet::with_classes(cinder_vb, cinder_classes)?;
+    let cinder_v_pred = train::detect_v_pred(cinder_path);
     crate::quantize::load_varmap(&mut cinder_vm, cinder_path)?;
 
     // Load experts (optional — applied during Cinder detail phase)
@@ -126,7 +136,7 @@ pub fn cascade_sample(
             let next_frac = 1.0 - ((step + 1) as f32 / total_steps as f32);
             let next_amount = train::cosine_schedule(next_frac);
 
-            x = ddim_step(&quench, &x, amount, next_amount, &class_tensor, &null_class, q_cfg, &device)?;
+            x = ddim_step(&quench, &x, amount, next_amount, &class_tensor, &null_class, q_cfg, &device, quench_v_pred)?;
         }
 
         // Phase 2: Cinder detail (edges, highlights, fine pixel work)
@@ -143,7 +153,12 @@ pub fn cascade_sample(
             };
 
             let t = Tensor::new(&[amount], &device)?;
-            let pred_clean = train::cfg_denoise(&cinder, &x, &t, &class_tensor, &null_class, c_cfg)?;
+            let raw_out = train::cfg_denoise(&cinder, &x, &t, &class_tensor, &null_class, c_cfg)?;
+            let pred_clean = if cinder_v_pred {
+                (&x - (raw_out * amount as f64)?)?
+            } else {
+                raw_out
+            };
 
             // Expert correction during detail phase
             let pred_clean = if let Some(ref exp) = experts {
@@ -186,6 +201,7 @@ pub fn anvil_sample(
     let mut anvil_vm = VarMap::new();
     let anvil_vb = VarBuilder::from_varmap(&anvil_vm, DType::F32, &device);
     let anvil = AnvilUNet::new(anvil_vb)?;
+    let anvil_v_pred = train::detect_v_pred(anvil_path);
     crate::quantize::load_varmap(&mut anvil_vm, anvil_path)?;
 
     let cfg_scale = if has_null { train::DEFAULT_CFG_SCALE } else { 1.0 };
@@ -205,7 +221,7 @@ pub fn anvil_sample(
             let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
             let next_amount = if step + 1 < steps { train::cosine_schedule(next_frac) } else { 0.0 };
 
-            x = ddim_step(&anvil, &x, amount, next_amount, &class_tensor, &null_class, cfg_scale, &device)?;
+            x = ddim_step(&anvil, &x, amount, next_amount, &class_tensor, &null_class, cfg_scale, &device, anvil_v_pred)?;
         }
 
         let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
