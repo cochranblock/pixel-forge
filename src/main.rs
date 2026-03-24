@@ -83,6 +83,9 @@ enum Cmd {
         /// Disable EMA (saves ~50% RAM during training).
         #[arg(long)]
         no_ema: bool,
+        /// Train with v-prediction (model predicts velocity instead of clean image).
+        #[arg(long)]
+        v_pred: bool,
     },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
@@ -412,6 +415,15 @@ enum Cmd {
         #[arg(short, long, default_value = "cascade.png")]
         output: String,
     },
+    /// Upscale 16x16 PNGs from data/ to 32x32 in data_v2_32/ (nearest-neighbor).
+    Upscale {
+        /// Source directory with 16x16 class subdirs.
+        #[arg(short, long, default_value = "data")]
+        input: String,
+        /// Destination directory for 32x32 output.
+        #[arg(short, long, default_value = "data_v2_32")]
+        output: String,
+    },
     /// Desktop generation: Anvil single-stage (needs 3+ GB VRAM).
     Anvil {
         /// Class to generate.
@@ -518,6 +530,7 @@ fn main() -> anyhow::Result<()> {
             medium,
             anvil,
             no_ema,
+            v_pred,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -529,6 +542,7 @@ fn main() -> anyhow::Result<()> {
                 medium,
                 anvil,
                 ema: !no_ema,
+                v_prediction: v_pred,
                 ..Default::default()
             };
             train::train(&config)?;
@@ -1135,6 +1149,47 @@ fn main() -> anyhow::Result<()> {
                 sheet_img.save(&output)?;
             }
             println!("saved: {output}");
+        }
+        Cmd::Upscale { input, output } => {
+            let classes = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let mut total = 0u32;
+            for class in &classes {
+                let src_dir = std::path::Path::new(&input).join(class);
+                let dst_dir = std::path::Path::new(&output).join(class);
+                if !src_dir.is_dir() {
+                    continue;
+                }
+                std::fs::create_dir_all(&dst_dir)?;
+                let mut count = 0u32;
+                for entry in std::fs::read_dir(&src_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("png") {
+                        continue;
+                    }
+                    let fname = path.file_name().unwrap();
+                    let dst_path = dst_dir.join(fname);
+                    if dst_path.exists() {
+                        continue;
+                    }
+                    let img = image::open(&path)?.to_rgba8();
+                    let resized = image::imageops::resize(
+                        &img, 32, 32,
+                        image::imageops::FilterType::Nearest,
+                    );
+                    resized.save(&dst_path)?;
+                    count += 1;
+                }
+                if count > 0 {
+                    println!("{class}: {count} upscaled");
+                }
+                total += count;
+            }
+            println!("total: {total} tiles upscaled to 32x32");
         }
         Cmd::Anvil { class, anvil, count, steps, palette: palette_name, output } => {
             let class_names = [
