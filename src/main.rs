@@ -86,6 +86,12 @@ enum Cmd {
         /// Train with v-prediction (model predicts velocity instead of clean image).
         #[arg(long)]
         v_pred: bool,
+        /// Minimum learning rate for cosine LR decay. 0 = flat LR.
+        #[arg(long, default_value_t = 1e-5)]
+        lr_min: f64,
+        /// Warm-up epochs: linear ramp from lr_min to lr.
+        #[arg(long, default_value_t = 5)]
+        warmup: usize,
     },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
@@ -531,6 +537,8 @@ fn main() -> anyhow::Result<()> {
             anvil,
             no_ema,
             v_pred,
+            lr_min,
+            warmup,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -543,6 +551,8 @@ fn main() -> anyhow::Result<()> {
                 anvil,
                 ema: !no_ema,
                 v_prediction: v_pred,
+                lr_min,
+                warmup_epochs: warmup,
                 ..Default::default()
             };
             train::train(&config)?;
