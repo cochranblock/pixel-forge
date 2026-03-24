@@ -96,6 +96,16 @@ enum Cmd {
         #[arg(long, default_value_t = 32)]
         size: u32,
     },
+    /// Precompute per-class skeleton images from training data.
+    /// Skeletons give the sampler a head start — 70% structure, 30% noise.
+    Skeletons {
+        /// Path to training data directory.
+        #[arg(short, long, default_value = "data")]
+        data: String,
+        /// Image size (must match training data).
+        #[arg(long, default_value_t = 32)]
+        img_size: u32,
+    },
     /// Generate pixel art using a trained model (no SD required).
     Generate {
         /// Class to generate: character, weapon, potion, terrain, enemy, etc.
@@ -494,6 +504,9 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Curate { raw, output, size } => {
             curate::curate(&raw, &output, size)?;
+        }
+        Cmd::Skeletons { data, img_size } => {
+            train::compute_skeletons(&data, img_size)?;
         }
         Cmd::Train {
             data,

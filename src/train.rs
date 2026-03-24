@@ -624,6 +624,98 @@ pub fn cfg_denoise(
     &uncond + (diff * cfg_scale)?
 }
 
+/// Skeleton noise level — 30% noise, 70% skeleton.
+/// Enters the cosine schedule at ~60%, so 10 steps focus on detail not structure.
+const SKELETON_NOISE: f32 = 0.30;
+
+/// Compute per-class mean images from the dataset and save as safetensors.
+/// Each class gets a (1, 3, H, W) tensor keyed by class index.
+pub fn compute_skeletons(data_dir: &str, img_size: u32) -> Result<()> {
+    let dataset = preprocess(data_dir, img_size)?;
+    let n = dataset.labels.len();
+    let stride = dataset.stride;
+    let num_classes = 15usize; // real classes, no null
+
+    let mut sums = vec![vec![0.0f64; stride]; num_classes];
+    let mut counts = vec![0usize; num_classes];
+
+    for i in 0..n {
+        let c = dataset.labels[i] as usize;
+        if c >= num_classes { continue; }
+        counts[c] += 1;
+        let offset = i * stride;
+        for j in 0..stride {
+            sums[c][j] += dataset.pixels[offset + j] as f64;
+        }
+    }
+
+    let output = format!("{}/skeletons.safetensors", data_dir);
+    let mut tensors = std::collections::HashMap::new();
+
+    for c in 0..num_classes {
+        if counts[c] == 0 { continue; }
+        let mean: Vec<f32> = sums[c].iter().map(|s| (*s / counts[c] as f64) as f32).collect();
+        let t = Tensor::from_vec(mean, (1, 3, img_size as usize, img_size as usize), &Device::Cpu)?;
+        tensors.insert(format!("class_{c}"), t);
+        println!("  class {c}: {} samples → skeleton", counts[c]);
+    }
+
+    candle_core::safetensors::save(&tensors, &output)?;
+    println!("saved: {output} ({num_classes} skeletons)");
+    Ok(())
+}
+
+/// Load skeleton for a class. Returns (1, 3, H, W) tensor on the given device.
+/// Falls back to None if file missing, class not found, or size mismatch.
+pub fn load_skeleton(data_dir: &str, class_id: u32, img_size: u32, device: &Device) -> Option<Tensor> {
+    let path = format!("{}/skeletons.safetensors", data_dir);
+    if !Path::new(&path).exists() {
+        // Also check next to the model (CWD, HOME, exe dir)
+        for candidate in ["skeletons.safetensors"] {
+            if Path::new(candidate).exists() {
+                return load_skeleton_from(candidate, class_id, img_size, device);
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                let home_path = format!("{}/{}", home, candidate);
+                if Path::new(&home_path).exists() {
+                    return load_skeleton_from(&home_path, class_id, img_size, device);
+                }
+            }
+        }
+        return None;
+    }
+    load_skeleton_from(&path, class_id, img_size, device)
+}
+
+fn load_skeleton_from(path: &str, class_id: u32, img_size: u32, device: &Device) -> Option<Tensor> {
+    let data = std::fs::read(path).ok()?;
+    let tensors = candle_core::safetensors::load_buffer(&data, device).ok()?;
+    let key = format!("class_{}", class_id);
+    let t = tensors.get(&key)?;
+    // Verify spatial dimensions match
+    let dims = t.dims();
+    if dims.len() == 4 && dims[2] == img_size as usize && dims[3] == img_size as usize {
+        Some(t.clone())
+    } else {
+        None
+    }
+}
+
+/// Create initial tensor: skeleton + noise blend instead of pure noise.
+/// skeleton_mix = 0.7 means 70% skeleton, 30% noise.
+fn skeleton_start(
+    skeleton: &Tensor,
+    seed: Option<u64>,
+    class_id: u32,
+    index: u32,
+    img_size: u32,
+    device: &Device,
+) -> candle_core::Result<Tensor> {
+    let noise = seeded_noise(seed, class_id, index, img_size, device)?;
+    let mix = 1.0 - SKELETON_NOISE as f64; // 0.70
+    (skeleton * mix)? + (&noise * SKELETON_NOISE as f64)?
+}
+
 /// Convert prediction tensor to RGBA image.
 fn tensor_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
     let x = x.clamp(0.0, 1.0)?;
@@ -685,34 +777,43 @@ pub fn sample_seeded(
         Tensor::new(&[0u32], &device)?
     };
 
+    // Try loading skeleton for this class
+    let skeleton = load_skeleton("data", class_id, img_size, &device)
+        .or_else(|| load_skeleton("data_v2_32", class_id, img_size, &device));
+    let use_skeleton = skeleton.is_some();
+    if use_skeleton { println!("  using skeleton (70/30 blend)"); }
+
     if let Some(s) = seed {
         println!("  seed: {s}");
     }
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
+        let mut x = if let Some(ref skel) = skeleton {
+            skeleton_start(skel, seed, class_id, i, img_size, &device)?
+        } else {
+            seeded_noise(seed, class_id, i, img_size, &device)?
+        };
+
+        // When using skeleton, start schedule at SKELETON_NOISE instead of 1.0
+        let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
 
         for step in 0..steps {
-            // Cosine schedule: amount of noise at this step (matches training)
-            let t_frac = 1.0 - (step as f32 / steps as f32);
-            let amount = cosine_schedule(t_frac);
-            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
-            let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
+            let frac = step as f32 / steps as f32; // 0.0 → 1.0
+            let amount = start_noise * (1.0 - frac); // ramp from start_noise → 0
+            let next_amount = if step + 1 < steps {
+                start_noise * (1.0 - (step + 1) as f32 / steps as f32)
+            } else {
+                0.0
+            };
 
-            // Model predicts clean image from noisy input
             let t = Tensor::new(&[amount], &device)?;
             let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
 
-            // Reconstruct at next noise level:
-            // corrupt formula: noisy = clean * (1 - amount) + noise * amount
-            // So: noise = (x - pred_clean * (1 - amount)) / amount
-            // Next: x_next = pred_clean * (1 - next_amount) + noise * next_amount
             if next_amount > 1e-6 {
                 let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
                 x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
             } else {
-                // Last step: just use the predicted clean image
                 x = pred_clean;
             }
         }
@@ -767,19 +868,33 @@ pub fn sample_medium_seeded(
         Tensor::new(&[0u32], &device)?
     };
 
+    let skeleton = load_skeleton("data", class_id, img_size, &device)
+        .or_else(|| load_skeleton("data_v2_32", class_id, img_size, &device));
+    let use_skeleton = skeleton.is_some();
+    if use_skeleton { println!("  using skeleton (70/30 blend)"); }
+
     if let Some(s) = seed {
         println!("  seed: {s}");
     }
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = seeded_noise(seed, class_id, i, img_size, &device)?;
+        let mut x = if let Some(ref skel) = skeleton {
+            skeleton_start(skel, seed, class_id, i, img_size, &device)?
+        } else {
+            seeded_noise(seed, class_id, i, img_size, &device)?
+        };
+
+        let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
 
         for step in 0..steps {
-            let t_frac = 1.0 - (step as f32 / steps as f32);
-            let amount = cosine_schedule(t_frac);
-            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
-            let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
+            let frac = step as f32 / steps as f32;
+            let amount = start_noise * (1.0 - frac);
+            let next_amount = if step + 1 < steps {
+                start_noise * (1.0 - (step + 1) as f32 / steps as f32)
+            } else {
+                0.0
+            };
 
             let t = Tensor::new(&[amount], &device)?;
             let pred_clean = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
