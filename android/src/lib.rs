@@ -22,13 +22,17 @@ fn android_main(app: AndroidApp) {
     unsafe { std::env::set_var("HOME", &data_dir) };
     log::info!("HOME={}", data_dir.display());
 
-    // Extract bundled models on first launch
+    // Extract bundled models — overwrite if size changed (new training run)
     for (name, bytes) in [
         ("pixel-forge-cinder.safetensors", CINDER_MODEL),
         ("pixel-forge-quench.safetensors", QUENCH_MODEL),
     ] {
         let dest = data_dir.join(name);
-        if !dest.exists() {
+        let needs_write = match std::fs::metadata(&dest) {
+            Ok(meta) => meta.len() != bytes.len() as u64,
+            Err(_) => true,
+        };
+        if needs_write {
             log::info!("extracting {} ({} bytes)...", name, bytes.len());
             if let Err(e) = std::fs::write(&dest, bytes) {
                 log::error!("failed to extract {}: {e}", name);
