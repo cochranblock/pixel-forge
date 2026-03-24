@@ -90,7 +90,7 @@ pub fn handle(input: &str) -> PluginResponse {
                 ],
                 "sliders": [
                     { "id": "count", "label": "n", "min": 1, "max": 32, "default": 4 },
-                    { "id": "steps", "label": "steps", "min": 10, "max": 100, "default": 40 },
+                    { "id": "steps", "label": "steps", "min": 5, "max": 100, "default": 10 },
                 ],
                 "action": "generate",
                 "output": "sprites",
@@ -141,7 +141,7 @@ fn handle_classes() -> PluginResponse {
 fn handle_generate(args: &serde_json::Value) -> PluginResponse {
     let class = args.get("class").and_then(|v| v.as_str()).unwrap_or("character");
     let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-    let steps = args.get("steps").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+    let steps = args.get("steps").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let palette = args.get("palette").and_then(|v| v.as_str()).unwrap_or("stardew");
 
     let class_id = CLASS_NAMES.iter()
