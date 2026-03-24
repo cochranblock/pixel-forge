@@ -58,6 +58,10 @@ pub struct TrainConfig {
     pub cosine_schedule: bool,
     /// Min-SNR loss weighting. 0.0 = disabled, 5.0 = recommended.
     pub min_snr_gamma: f64,
+    /// Cosine LR decay: ramp from lr → lr_min over training. 0.0 = flat LR.
+    pub lr_min: f64,
+    /// Warm-up epochs: linear ramp from lr_min to lr before decay kicks in.
+    pub warmup_epochs: usize,
     /// V-prediction: model predicts velocity (noise - clean) instead of clean image.
     /// Improves training stability in high-noise regions.
     pub v_prediction: bool,
@@ -79,6 +83,8 @@ impl Default for TrainConfig {
             ema_decay: 0.9999,
             cosine_schedule: true,
             min_snr_gamma: 5.0,
+            lr_min: 1e-5,
+            warmup_epochs: 5,
             v_prediction: false,
         }
     }
@@ -475,6 +481,23 @@ fn train_inner(
     for epoch in 0..config.epochs {
         let epoch_start = std::time::Instant::now();
 
+        // Cosine LR decay with linear warm-up
+        let lr = if config.lr_min > 0.0 {
+            if epoch < config.warmup_epochs {
+                // Linear warm-up: lr_min → lr
+                let frac = epoch as f64 / config.warmup_epochs.max(1) as f64;
+                config.lr_min + (config.lr - config.lr_min) * frac
+            } else {
+                // Cosine decay: lr → lr_min
+                let decay_epochs = config.epochs - config.warmup_epochs;
+                let frac = (epoch - config.warmup_epochs) as f64 / decay_epochs.max(1) as f64;
+                config.lr_min + 0.5 * (config.lr - config.lr_min) * (1.0 + (frac * std::f64::consts::PI).cos())
+            }
+        } else {
+            config.lr
+        };
+        opt.set_learning_rate(lr);
+
         let mut indices: Vec<usize> = (0..n).collect();
         indices.shuffle(&mut rand::thread_rng());
 
@@ -568,7 +591,7 @@ fn train_inner(
         let elapsed = epoch_start.elapsed().as_secs_f32();
 
         if epoch % 5 == 0 || epoch == config.epochs - 1 {
-            println!("  epoch {}/{}: loss={:.6} ({:.1}s)", epoch + 1, config.epochs, avg_loss, elapsed);
+            println!("  epoch {}/{}: loss={:.6} lr={:.1e} ({:.1}s)", epoch + 1, config.epochs, avg_loss, lr, elapsed);
         }
 
         if (epoch + 1) % 25 == 0 {
