@@ -29,7 +29,7 @@ struct GenerationState {
     result_width: u32,
     result_height: u32,
     generating: bool,
-    /// Individual sprites for swipe review (raw f32 pixels, 16x16x3).
+    /// Individual sprites for swipe review (raw f32 pixels, 32x32x3).
     individual_sprites: Vec<Vec<f32>>,
     /// Class IDs for each individual sprite.
     sprite_class_ids: Vec<u32>,
@@ -718,7 +718,7 @@ struct GenResult {
     sheet_pixels: Vec<u8>,
     width: u32,
     height: u32,
-    /// Individual sprites as channel-first f32 (3*16*16 each).
+    /// Individual sprites as channel-first f32 (3*32*32 each).
     sprites_f32: Vec<Vec<f32>>,
 }
 

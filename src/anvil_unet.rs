@@ -1,6 +1,6 @@
 // Unlicense — cochranblock.org
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
-//! AnvilUNet — XL diffusion model for highest-quality 16×16 sprites.
+//! AnvilUNet — XL diffusion model for highest-quality 32×32 sprites.
 //! ~16M params (~64 MB). The flagship model.
 //!
 //! Channel config: [128, 256, 256] (vs Quench's [64, 128, 128])

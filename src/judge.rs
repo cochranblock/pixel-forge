@@ -31,13 +31,13 @@ const ACCEPT_THRESHOLD: f32 = 0.5;
 /// 4-layer CNN binary classifier.
 ///
 /// ```text
-/// Conv2d(3→16, k3, pad1)    16×16 → 16×16    448 params
+/// Conv2d(3→16, k3, pad1)    32×32 → 32×32    448 params
 /// SiLU
-/// Conv2d(16→16, k3, s2, p1) 16×16 → 8×8    2,320 params
+/// Conv2d(16→16, k3, s2, p1) 32×32 → 16×16  2,320 params
 /// GroupNorm(4, 16) + SiLU                       32 params
-/// Conv2d(16→32, k3, s2, p1) 8×8 → 4×4      4,640 params
+/// Conv2d(16→32, k3, s2, p1) 16×16 → 8×8    4,640 params
 /// GroupNorm(8, 32) + SiLU                       64 params
-/// Conv2d(32→32, k3, s2, p1) 4×4 → 2×2      9,248 params
+/// Conv2d(32→32, k3, s2, p1) 8×8 → 4×4      9,248 params
 /// GroupNorm(8, 32) + SiLU                       64 params
 /// AdaptiveAvgPool → (B, 32)
 /// Linear(32→1) + sigmoid                        33 params
@@ -81,7 +81,7 @@ impl MicroClassifier {
         // Layer 4: Conv(32→32, stride 2) + GN + SiLU
         let h = nn::ops::silu(&self.gn4.forward(&self.conv4.forward(&h)?)?)?;
 
-        // Global average pool: (B, 32, 2, 2) → (B, 32)
+        // Global average pool: (B, 32, 4, 4) → (B, 32)
         let (_, _, _fh, _fw) = h.dims4()?;
         let h = h.mean_keepdim(3)?.mean_keepdim(2)?.squeeze(3)?.squeeze(2)?;
 

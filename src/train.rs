@@ -2,7 +2,7 @@
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
 //! Training loop for the tiny pixel art diffusion model.
 //! Pure Rust — no Python, no external frameworks.
-//! Approach inspired by PixelGen16x16 (MIT, Anouar Khaldi 2025).
+//! Approach inspired by PixelGen (MIT, Anouar Khaldi 2025).
 //!
 //! Data pipeline: preprocess PNGs once → bincode+zstd blob → load into RAM → train.
 //! Zero disk I/O during training. Palette swap augmentation in-memory.
@@ -68,7 +68,7 @@ impl Default for TrainConfig {
             epochs: 100,
             batch_size: 64,
             lr: 1e-3,
-            img_size: 16,
+            img_size: 32,
             medium: false,
             anvil: false,
             cfg_dropout: 0.1,

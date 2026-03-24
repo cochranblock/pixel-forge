@@ -6,7 +6,7 @@
 //!
 //! Nodes run `pixel-forge` locally with their own GPU (Metal/CUDA/CPU).
 //! Results are base64-encoded PNGs piped back over SSH stdout.
-//! 16x16 sprites = ~768 bytes each. Network is never the bottleneck.
+//! 32x32 sprites = ~3072 bytes each. Network is never the bottleneck.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -324,11 +324,11 @@ fn generate_local(class: &str, count: u32, steps: usize, palette: &str) -> Resul
     let class_id = class_name_to_id(class);
     let pal = crate::palette::load_palette(palette)?;
 
-    let raw_images = crate::device_cap::auto_sample(class_id, 16, count, steps)?;
+    let raw_images = crate::device_cap::auto_sample(class_id, 32, count, steps)?;
 
     let mut pngs = Vec::new();
     for img in raw_images {
-        let snapped = crate::grid::snap_to_grid(&img, 16);
+        let snapped = crate::grid::snap_to_grid(&img, 32);
         let quantized = crate::palette::quantize(&snapped, &pal);
         let mut buf = Vec::new();
         quantized.write_to(

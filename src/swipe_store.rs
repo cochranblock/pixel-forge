@@ -11,10 +11,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Pixel stride for 16×16 RGB channel-first: 3 × 16 × 16 = 768 floats.
-pub const PIXEL_STRIDE: usize = 768;
+/// Pixel stride for 32×32 RGB channel-first: 3 × 32 × 32 = 3072 floats.
+pub const PIXEL_STRIDE: usize = 3072;
 
-/// Single swipe: 16×16×3 RGB f32 pixels + bool label.
+/// Single swipe: 32×32×3 RGB f32 pixels + bool label.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Swipe {
     /// Channel-first f32 pixels [R..., G..., B...], len = PIXEL_STRIDE
