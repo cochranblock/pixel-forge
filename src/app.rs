@@ -38,9 +38,10 @@ struct GenerationState {
 /// Generation mode — which model pipeline to use.
 #[derive(Clone, Copy, PartialEq)]
 pub enum GenMode {
-    Cinder,   // m0 — fast, small
-    Quench,   // m1 — better quality
-    Cascade,  // m0→m1 MoE — best quality
+    Cinder,   // m0 — fast, detail
+    Quench,   // m1 — foundation
+    Cascade,  // m1→m0 MoE — Quench foundation, Cinder detail
+    Anvil,    // m2 — desktop, single-stage
 }
 
 impl GenMode {
@@ -49,13 +50,15 @@ impl GenMode {
             GenMode::Cinder => "Cinder",
             GenMode::Quench => "Quench",
             GenMode::Cascade => "Cascade",
+            GenMode::Anvil => "Anvil",
         }
     }
     fn desc(&self) -> &'static str {
         match self {
             GenMode::Cinder => "fast, 1M params",
-            GenMode::Quench => "quality, 6M params",
-            GenMode::Cascade => "MoE: Cinder drafts, Quench refines",
+            GenMode::Quench => "foundation, 6M params",
+            GenMode::Cascade => "MoE: Quench foundation, Cinder detail",
+            GenMode::Anvil => "desktop, 16M params",
         }
     }
 }
@@ -200,6 +203,9 @@ impl PixelForgeApp {
                     }
                     GenMode::Cinder => {
                         generate_for_display(device_cap::Tier::Cinder, class_id, count, steps, &palette_name)
+                    }
+                    GenMode::Anvil => {
+                        anvil_for_display(class_id, count, steps, &palette_name)
                     }
                 }
             };
@@ -401,7 +407,7 @@ impl eframe::App for PixelForgeApp {
                     ui.set_width(ui.available_width());
                     section_label(ui, "MODEL");
                     ui.horizontal(|ui| {
-                        for mode in [GenMode::Cinder, GenMode::Quench, GenMode::Cascade] {
+                        for mode in [GenMode::Cinder, GenMode::Quench, GenMode::Cascade, GenMode::Anvil] {
                             let selected = self.gen_mode == mode;
                             if styled_button(ui, mode.label(), selected, egui::vec2(80.0, 32.0)) {
                                 self.gen_mode = mode;
@@ -780,7 +786,7 @@ fn generate_for_display(
     Ok(GenResult { sheet_pixels: pixels, width: w, height: h, sprites_f32 })
 }
 
-/// MoE cascade: Cinder drafts → Quench refines.
+/// MoE cascade: Quench foundation → Cinder detail.
 fn cascade_for_display(
     class_id: u32,
     count: u32,
@@ -790,23 +796,23 @@ fn cascade_for_display(
     let pal = palette::load_palette(palette_name)?;
     let img_size = 32u32;
 
-    let cinder_path = device_cap::Tier::Cinder.model_path();
     let quench_path = device_cap::Tier::Quench.model_path();
+    let cinder_path = device_cap::Tier::Cinder.model_path();
 
-    if !cinder_path.exists() || !quench_path.exists() {
-        anyhow::bail!("cascade needs both Cinder and Quench models");
+    if !quench_path.exists() || !cinder_path.exists() {
+        anyhow::bail!("cascade needs both Quench and Cinder models");
     }
 
-    // Split steps: 25% cinder draft, 75% quench refine
-    let cinder_steps = (steps as f32 * 0.25).max(1.0) as usize;
-    let quench_steps = steps - cinder_steps;
+    // Split steps: 60% Quench foundation, 40% Cinder detail
+    let quench_steps = (steps as f32 * 0.6).max(1.0) as usize;
+    let cinder_steps = steps - quench_steps;
 
     let config = crate::moe::CascadeConfig {
-        cinder_steps,
         quench_steps,
+        cinder_steps,
     };
 
-    let experts_path_buf = device_cap::Tier::Cinder.model_path()
+    let experts_path_buf = cinder_path
         .parent().unwrap_or(std::path::Path::new("."))
         .join("experts.safetensors");
     let experts_path = if experts_path_buf.exists() {
@@ -816,10 +822,48 @@ fn cascade_for_display(
     };
 
     let raw_images = crate::moe::cascade_sample(
-        &cinder_path.to_string_lossy(),
         &quench_path.to_string_lossy(),
+        &cinder_path.to_string_lossy(),
         experts_path.as_deref(),
         class_id, img_size, count, &config,
+    )?;
+
+    let processed: Vec<image::RgbaImage> = raw_images
+        .into_iter()
+        .map(|img| {
+            let snapped = grid::snap_to_grid(&img, img_size);
+            palette::quantize(&snapped, &pal)
+        })
+        .collect();
+
+    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(|img| rgba_to_f32(img)).collect();
+
+    let sheet = crate::sheet::pack_grid(&processed, count.min(8));
+    let w = sheet.width();
+    let h = sheet.height();
+    let pixels = sheet.into_raw();
+
+    Ok(GenResult { sheet_pixels: pixels, width: w, height: h, sprites_f32 })
+}
+
+/// Desktop pipeline: Anvil single-stage.
+fn anvil_for_display(
+    class_id: u32,
+    count: u32,
+    steps: usize,
+    palette_name: &str,
+) -> anyhow::Result<GenResult> {
+    let pal = palette::load_palette(palette_name)?;
+    let img_size = 32u32;
+
+    let anvil_path = device_cap::Tier::Anvil.model_path();
+    if !anvil_path.exists() {
+        anyhow::bail!("Anvil model not found: {}", anvil_path.display());
+    }
+
+    let raw_images = crate::moe::anvil_sample(
+        &anvil_path.to_string_lossy(),
+        class_id, img_size, count, steps,
     )?;
 
     let processed: Vec<image::RgbaImage> = raw_images
