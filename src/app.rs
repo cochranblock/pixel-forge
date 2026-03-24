@@ -106,7 +106,7 @@ impl Default for PixelForgeApp {
             show_advanced: false,
             gen_mode: GenMode::Cascade,
             gen_count: 4,
-            gen_steps: 40,
+            gen_steps: 10,
             gen_state: Arc::new(Mutex::new(GenerationState {
                 status: String::new(),
                 result_pixels: None,
