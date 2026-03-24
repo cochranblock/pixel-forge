@@ -82,7 +82,7 @@ impl Default for TrainConfig {
 
 /// Cosine noise schedule — spends more time in the mid-noise range
 /// where structure forms. Better edge quality than linear.
-fn cosine_schedule(t: f32) -> f32 {
+pub fn cosine_schedule(t: f32) -> f32 {
     let s = 0.008; // small offset to prevent singularity at t=0
     let f_t = ((t + s) / (1.0 + s) * std::f32::consts::FRAC_PI_2).cos().powi(2);
     let f_0 = (s / (1.0 + s) * std::f32::consts::FRAC_PI_2).cos().powi(2);
@@ -166,7 +166,7 @@ impl EmaWeights {
 /// Unconditional class ID for CFG — index 15 is the "null" class.
 /// Model sees this during training when class is dropped.
 /// Embedding table is 16 entries: 0-14 = real classes, 15 = unconditional.
-const CFG_NULL_CLASS: u32 = 15;
+pub const CFG_NULL_CLASS: u32 = 15;
 
 /// Trait to unify TinyUNet and MediumUNet forward passes.
 pub trait DiffusionModel {
@@ -580,7 +580,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
 
 /// Default CFG guidance scale for inference.
 /// Higher = stronger class adherence, lower = more diversity.
-const DEFAULT_CFG_SCALE: f64 = 3.0;
+pub const DEFAULT_CFG_SCALE: f64 = 3.0;
 
 /// Create seeded noise tensor. Same seed + class + index = same sprite every time.
 /// Inspired by No Man's Sky / Factorio deterministic world generation:
@@ -605,7 +605,7 @@ fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, dev
 
 /// CFG-guided denoising step: run model conditioned + unconditional,
 /// blend predictions to amplify class signal.
-fn cfg_denoise(
+pub fn cfg_denoise(
     model: &dyn DiffusionModel,
     x: &Tensor,
     t: &Tensor,

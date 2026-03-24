@@ -5,18 +5,18 @@
 //! Mobile/embedded (2-stage): Quench lays foundation → Cinder adds detail.
 //! Desktop (single-stage): Anvil does everything — 16M params, needs 3+ GB VRAM.
 //!
-//! Quench + Cinder + Experts = 27 MB total. Sub-second on Metal.
-//! Anvil alone = 64 MB. Sub-second on desktop GPUs.
+//! Both pipelines use the same cosine-schedule DDIM sampler + CFG as training.
 
 use anyhow::Result;
 use candle_core::{DType, Tensor};
 use candle_nn::{VarBuilder, VarMap};
 use image::RgbaImage;
 
+use crate::anvil_unet::AnvilUNet;
 use crate::expert;
 use crate::medium_unet::MediumUNet;
 use crate::tiny_unet::TinyUNet;
-use crate::anvil_unet::AnvilUNet;
+use crate::train::{self, DiffusionModel};
 
 /// Cascade config for 2-stage Quench → Cinder pipeline.
 pub struct CascadeConfig {
@@ -32,6 +32,28 @@ impl Default for CascadeConfig {
             quench_steps: 25,
             cinder_steps: 15,
         }
+    }
+}
+
+/// DDIM step: predict clean → extract noise → recompose at next noise level.
+fn ddim_step(
+    model: &dyn DiffusionModel,
+    x: &Tensor,
+    amount: f32,
+    next_amount: f32,
+    class_tensor: &Tensor,
+    null_class: &Tensor,
+    cfg_scale: f64,
+    device: &candle_core::Device,
+) -> candle_core::Result<Tensor> {
+    let t = Tensor::new(&[amount], device)?;
+    let pred_clean = train::cfg_denoise(model, x, &t, class_tensor, null_class, cfg_scale)?;
+
+    if next_amount > 1e-6 {
+        let noise = ((x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+        (&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?
+    } else {
+        Ok(pred_clean)
     }
 }
 
@@ -51,7 +73,7 @@ pub fn cascade_sample(
     // Load Quench (foundation — runs first)
     println!("loading Quench from {quench_path}{}...",
         if crate::quantize::is_f16(quench_path) { " (f16→f32)" } else { "" });
-    let quench_classes = crate::train::detect_class_count_pub(quench_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
+    let quench_classes = train::detect_class_count_pub(quench_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let mut quench_vm = VarMap::new();
     let quench_vb = VarBuilder::from_varmap(&quench_vm, DType::F32, &device);
     let quench = MediumUNet::with_classes(quench_vb, quench_classes)?;
@@ -60,7 +82,7 @@ pub fn cascade_sample(
     // Load Cinder (detail — runs second)
     println!("loading Cinder from {cinder_path}{}...",
         if crate::quantize::is_f16(cinder_path) { " (f16→f32)" } else { "" });
-    let cinder_classes = crate::train::detect_class_count_pub(cinder_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
+    let cinder_classes = train::detect_class_count_pub(cinder_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let mut cinder_vm = VarMap::new();
     let cinder_vb = VarBuilder::from_varmap(&cinder_vm, DType::F32, &device);
     let cinder = TinyUNet::with_classes(cinder_vb, cinder_classes)?;
@@ -80,44 +102,66 @@ pub fn cascade_sample(
         None
     };
 
-    println!("cascade: {} Quench steps → {} Cinder+Expert steps = {} total",
-        config.quench_steps, config.cinder_steps, total_steps);
-
+    // CFG setup
+    let has_null_q = quench_classes > 15;
+    let has_null_c = cinder_classes > 15;
+    let cfg_scale = train::DEFAULT_CFG_SCALE;
     let max_class = (quench_classes.min(cinder_classes) - 1) as u32;
     let class_tensor = Tensor::new(&[class_id.min(max_class)], &device)?;
+    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
+
+    println!("cascade: {} Quench steps → {} Cinder+Expert steps = {} total, cfg={}",
+        config.quench_steps, config.cinder_steps, total_steps, cfg_scale);
+
     let mut images = Vec::new();
 
     for i in 0..count {
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         // Phase 1: Quench foundation (structure, shapes, composition)
+        let q_cfg = if has_null_q { cfg_scale } else { 1.0 };
         for step in 0..config.quench_steps {
-            let noise_level = 1.0 - (step as f32 / total_steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
-            let pred = quench.forward(&x, &t, &class_tensor)?;
-            let mix = 1.0 / (total_steps - step) as f64;
-            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+            let t_frac = 1.0 - (step as f32 / total_steps as f32);
+            let amount = train::cosine_schedule(t_frac);
+            let next_frac = 1.0 - ((step + 1) as f32 / total_steps as f32);
+            let next_amount = train::cosine_schedule(next_frac);
+
+            x = ddim_step(&quench, &x, amount, next_amount, &class_tensor, &null_class, q_cfg, &device)?;
         }
 
         // Phase 2: Cinder detail (edges, highlights, fine pixel work)
+        let c_cfg = if has_null_c { cfg_scale } else { 1.0 };
         for step in config.quench_steps..total_steps {
-            let noise_level = 1.0 - (step as f32 / total_steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
-            let pred = cinder.forward(&x, &t, &class_tensor)?;
-            let mix = 1.0 / (total_steps - step) as f64;
-
-            // Expert correction during detail phase
-            let pred = if let Some(ref exp) = experts {
-                let stage = expert::route(step - config.quench_steps, config.cinder_steps);
-                exp.correct(&pred, stage)?
+            let t_frac = 1.0 - (step as f32 / total_steps as f32);
+            let amount = train::cosine_schedule(t_frac);
+            let next_step = step + 1;
+            let next_amount = if next_step < total_steps {
+                let next_frac = 1.0 - (next_step as f32 / total_steps as f32);
+                train::cosine_schedule(next_frac)
             } else {
-                pred
+                0.0
             };
 
-            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+            let t = Tensor::new(&[amount], &device)?;
+            let pred_clean = train::cfg_denoise(&cinder, &x, &t, &class_tensor, &null_class, c_cfg)?;
+
+            // Expert correction during detail phase
+            let pred_clean = if let Some(ref exp) = experts {
+                let stage = expert::route(step - config.quench_steps, config.cinder_steps);
+                exp.correct(&pred_clean, stage)?
+            } else {
+                pred_clean
+            };
+
+            if next_amount > 1e-6 {
+                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            } else {
+                x = pred_clean;
+            }
         }
 
-        let img = tensor_to_rgba(&x, img_size)?;
+        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
         images.push(img);
         println!("  cascade sample {}/{count}", i + 1);
     }
@@ -137,30 +181,34 @@ pub fn anvil_sample(
 
     println!("loading Anvil from {anvil_path}{}...",
         if crate::quantize::is_f16(anvil_path) { " (f16→f32)" } else { "" });
-    let anvil_classes = crate::train::detect_class_count_pub(anvil_path).unwrap_or(crate::anvil_unet::NUM_CLASSES);
+    let anvil_classes = train::detect_class_count_pub(anvil_path).unwrap_or(crate::anvil_unet::NUM_CLASSES);
+    let has_null = anvil_classes > 15;
     let mut anvil_vm = VarMap::new();
     let anvil_vb = VarBuilder::from_varmap(&anvil_vm, DType::F32, &device);
     let anvil = AnvilUNet::new(anvil_vb)?;
     crate::quantize::load_varmap(&mut anvil_vm, anvil_path)?;
 
+    let cfg_scale = if has_null { train::DEFAULT_CFG_SCALE } else { 1.0 };
     let max_class = (anvil_classes - 1) as u32;
     let class_tensor = Tensor::new(&[class_id.min(max_class)], &device)?;
+    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
     let mut images = Vec::new();
 
-    println!("anvil: {} steps, {} samples", steps, count);
+    println!("anvil: {} steps, {} samples, cfg={}", steps, count, cfg_scale);
 
     for i in 0..count {
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         for step in 0..steps {
-            let noise_level = 1.0 - (step as f32 / steps as f32);
-            let t = Tensor::new(&[noise_level], &device)?;
-            let pred = anvil.forward(&x, &t, &class_tensor)?;
-            let mix = 1.0 / (steps - step) as f64;
-            x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
+            let t_frac = 1.0 - (step as f32 / steps as f32);
+            let amount = train::cosine_schedule(t_frac);
+            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
+            let next_amount = if step + 1 < steps { train::cosine_schedule(next_frac) } else { 0.0 };
+
+            x = ddim_step(&anvil, &x, amount, next_amount, &class_tensor, &null_class, cfg_scale, &device)?;
         }
 
-        let img = tensor_to_rgba(&x, img_size)?;
+        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
         images.push(img);
         println!("  anvil sample {}/{count}", i + 1);
     }
@@ -169,7 +217,6 @@ pub fn anvil_sample(
 }
 
 /// MoE cascade with discriminator quality gate.
-/// Re-rolls until enough pass or max_attempts exhausted.
 pub fn cascade_with_gate(
     quench_path: &str,
     cinder_path: &str,
@@ -280,7 +327,6 @@ pub fn anvil_with_gate(
 
 /// Convert a (1, 3, H, W) f32 tensor to an RGBA image.
 fn tensor_to_rgba(x: &Tensor, img_size: u32) -> Result<RgbaImage> {
-    let x = x.clamp(0.0, 1.0)?;
     let x = (x * 255.0)?.to_dtype(DType::U8)?;
     let x = x.squeeze(0)?.permute((1, 2, 0))?;
     let pixels = x.flatten_all()?.to_vec1::<u8>()?;
