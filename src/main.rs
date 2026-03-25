@@ -540,8 +540,6 @@ fn main() -> anyhow::Result<()> {
             train::compute_skeletons(&data, img_size)?;
         }
         Cmd::PrepStages { data, palette_colors } => {
-            use image::imageops::FilterType;
-
             let class_names = [
                 "character", "weapon", "potion", "terrain", "enemy",
                 "tree", "building", "animal", "effect", "food",
@@ -549,20 +547,20 @@ fn main() -> anyhow::Result<()> {
             ];
 
             let data_path = std::path::Path::new(&data);
+            let struct_base = data_path.join("_structure");  // SDF + normals (3ch PNG)
             let sil_base = data_path.join("_silhouettes");
-            let cb_base = data_path.join("_colorblocks");
+            std::fs::create_dir_all(&struct_base)?;
             std::fs::create_dir_all(&sil_base)?;
-            std::fs::create_dir_all(&cb_base)?;
 
             let mut total = 0usize;
             for class_name in &class_names {
                 let class_dir = data_path.join(class_name);
                 if !class_dir.is_dir() { continue; }
 
+                let struct_dir = struct_base.join(class_name);
                 let sil_dir = sil_base.join(class_name);
-                let cb_dir = cb_base.join(class_name);
+                std::fs::create_dir_all(&struct_dir)?;
                 std::fs::create_dir_all(&sil_dir)?;
-                std::fs::create_dir_all(&cb_dir)?;
 
                 let mut count = 0usize;
                 for entry in std::fs::read_dir(&class_dir)? {
@@ -571,44 +569,115 @@ fn main() -> anyhow::Result<()> {
                     if path.extension().and_then(|e| e.to_str()) != Some("png") { continue; }
 
                     let img = image::open(&path)?.to_rgba8();
+                    let w = img.width() as usize;
+                    let h = img.height() as usize;
                     let fname = entry.file_name();
 
-                    // Silhouette: any pixel with alpha > 0 becomes white, rest black
-                    let mut sil = image::RgbaImage::new(img.width(), img.height());
+                    // Binary mask: opaque pixels
+                    let mut mask = vec![false; w * h];
                     for (x, y, px) in img.enumerate_pixels() {
                         if px[3] > 10 {
-                            sil.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
-                        } else {
-                            sil.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+                            mask[y as usize * w + x as usize] = true;
                         }
                     }
-                    sil.save(sil_dir.join(&fname))?;
 
-                    // Color block: reduce to N colors via quantize then upscale back
-                    // Simple approach: posterize each channel to reduce color count
-                    let levels = (palette_colors as f32).cbrt().ceil() as u8;
-                    let step = if levels > 1 { 255 / (levels - 1) } else { 255 };
-                    let mut cb = image::RgbaImage::new(img.width(), img.height());
-                    for (x, y, px) in img.enumerate_pixels() {
-                        if px[3] > 10 {
-                            let r = (px[0] / step.max(1)) * step;
-                            let g = (px[1] / step.max(1)) * step;
-                            let b = (px[2] / step.max(1)) * step;
-                            cb.put_pixel(x, y, image::Rgba([r, g, b, 255]));
-                        } else {
-                            cb.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+                    // SDF via distance transform (Chamfer approximation)
+                    // Forward + backward pass with 3-4-3 weights
+                    let mut dist = vec![f32::MAX; w * h];
+                    // Set border pixels to 0, interior to MAX
+                    for y in 0..h {
+                        for x in 0..w {
+                            let i = y * w + x;
+                            if !mask[i] {
+                                dist[i] = 0.0;
+                            } else {
+                                // Check if any neighbor is outside — edge pixel
+                                let is_edge = (x == 0 || !mask[i - 1])
+                                    || (x == w - 1 || !mask[i + 1])
+                                    || (y == 0 || !mask[i - w])
+                                    || (y == h - 1 || !mask[i + w]);
+                                dist[i] = if is_edge { 0.5 } else { f32::MAX };
+                            }
                         }
                     }
-                    cb.save(cb_dir.join(&fname))?;
+                    // Forward pass (top-left to bottom-right)
+                    for y in 1..h {
+                        for x in 1..w {
+                            let i = y * w + x;
+                            if !mask[i] { continue; }
+                            let up = dist[(y - 1) * w + x] + 1.0;
+                            let left = dist[y * w + (x - 1)] + 1.0;
+                            let diag = dist[(y - 1) * w + (x - 1)] + 1.414;
+                            dist[i] = dist[i].min(up).min(left).min(diag);
+                        }
+                    }
+                    // Backward pass (bottom-right to top-left)
+                    for y in (0..h - 1).rev() {
+                        for x in (0..w - 1).rev() {
+                            let i = y * w + x;
+                            if !mask[i] { continue; }
+                            let down = dist[(y + 1) * w + x] + 1.0;
+                            let right = dist[y * w + (x + 1)] + 1.0;
+                            let diag = dist[(y + 1) * w + (x + 1)] + 1.414;
+                            dist[i] = dist[i].min(down).min(right).min(diag);
+                        }
+                    }
+
+                    // Normalize SDF to [0, 1]
+                    let max_dist = dist.iter().cloned().fold(0.0f32, f32::max).max(1.0);
+                    for d in &mut dist {
+                        *d /= max_dist;
+                    }
+
+                    // Normals from SDF gradient (Sobel-like)
+                    let mut nx = vec![0.0f32; w * h];
+                    let mut ny = vec![0.0f32; w * h];
+                    for y in 1..h - 1 {
+                        for x in 1..w - 1 {
+                            let i = y * w + x;
+                            if !mask[i] { continue; }
+                            // Horizontal gradient
+                            let gx = dist[i + 1] - dist[i - 1];
+                            // Vertical gradient
+                            let gy = dist[i + w] - dist[i - w];
+                            let len = (gx * gx + gy * gy).sqrt().max(1e-6);
+                            nx[i] = gx / len;
+                            ny[i] = gy / len;
+                        }
+                    }
+
+                    // Pack as RGB PNG: R=SDF, G=normal_x (0.5+0.5*nx), B=normal_y (0.5+0.5*ny)
+                    let mut struct_img = image::RgbImage::new(w as u32, h as u32);
+                    let mut sil_img = image::RgbImage::new(w as u32, h as u32);
+                    for y in 0..h {
+                        for x in 0..w {
+                            let i = y * w + x;
+                            if mask[i] {
+                                let r = (dist[i] * 255.0) as u8;
+                                let g = ((0.5 + 0.5 * nx[i]) * 255.0) as u8;
+                                let b = ((0.5 + 0.5 * ny[i]) * 255.0) as u8;
+                                struct_img.put_pixel(x as u32, y as u32, image::Rgb([r, g, b]));
+                                sil_img.put_pixel(x as u32, y as u32, image::Rgb([255, 255, 255]));
+                            } else {
+                                struct_img.put_pixel(x as u32, y as u32, image::Rgb([0, 128, 128]));
+                                sil_img.put_pixel(x as u32, y as u32, image::Rgb([0, 0, 0]));
+                            }
+                        }
+                    }
+                    struct_img.save(struct_dir.join(&fname))?;
+                    sil_img.save(sil_dir.join(&fname))?;
 
                     count += 1;
                 }
                 if count > 0 {
-                    println!("{class_name}: {count} sprites → silhouette + colorblock");
+                    println!("{class_name}: {count} sprites → structure map (SDF + normals)");
                 }
                 total += count;
             }
-            println!("total: {total} stage pairs in {sil_base:?} and {cb_base:?}");
+            println!("total: {total} structure maps in {struct_base:?}");
+            println!("  R = signed distance field (depth)");
+            println!("  G = normal X (horizontal surface direction)");
+            println!("  B = normal Y (vertical surface direction)");
         }
         Cmd::Train {
             data,
