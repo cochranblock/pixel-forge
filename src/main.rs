@@ -128,6 +128,18 @@ enum Cmd {
         #[arg(long, default_value_t = 8)]
         palette_colors: usize,
     },
+    /// Relight a sprite into 4-directional views (front/left/right/back).
+    /// Uses SDF + normal maps — no model needed, pure math.
+    Relight {
+        /// Input sprite PNG.
+        image: String,
+        /// Output sprite sheet (4 views side by side).
+        #[arg(short, long, default_value = "relit.png")]
+        output: String,
+        /// Also save individual direction PNGs (front.png, left.png, etc).
+        #[arg(long)]
+        split: bool,
+    },
     /// Generate pixel art using a trained model (no SD required).
     Generate {
         /// Class to generate: character, weapon, potion, terrain, enemy, etc.
@@ -156,6 +168,9 @@ enum Cmd {
         /// Seed for deterministic generation. Same seed = same sprite.
         #[arg(long)]
         seed: Option<u64>,
+        /// Generate 4-directional sprite sheet (front/left/right/back) via relighting.
+        #[arg(long)]
+        four_dir: bool,
     },
     /// Record a swipe (good/bad) on a generated sprite for Judge training.
     Swipe {
@@ -536,6 +551,23 @@ fn main() -> anyhow::Result<()> {
         Cmd::Curate { raw, output, size } => {
             curate::curate(&raw, &output, size)?;
         }
+        Cmd::Relight { image, output, split } => {
+            let img = image::open(&image)?.to_rgba8();
+            let (sheet, sprites) = relight::four_dir_sheet(&img);
+            sheet.save(&output)?;
+            println!("saved: {output} ({}x{}, 4 views)", sheet.width(), sheet.height());
+
+            if split {
+                let stem = std::path::Path::new(&output).file_stem()
+                    .and_then(|s| s.to_str()).unwrap_or("relit");
+                let dir = std::path::Path::new(&output).parent().unwrap_or(std::path::Path::new("."));
+                for (name, sprite) in &sprites {
+                    let path = dir.join(format!("{stem}_{name}.png"));
+                    sprite.save(&path)?;
+                    println!("  {}", path.display());
+                }
+            }
+        }
         Cmd::Skeletons { data, img_size } => {
             train::compute_skeletons(&data, img_size)?;
         }
@@ -759,6 +791,7 @@ fn main() -> anyhow::Result<()> {
             output,
             medium,
             seed,
+            four_dir,
         } => {
             let class_names = [
                 "character", "weapon", "potion", "terrain", "enemy",
@@ -786,13 +819,35 @@ fn main() -> anyhow::Result<()> {
                 })
                 .collect();
 
-            if count == 1 {
-                processed[0].save(&output)?;
+            if four_dir {
+                // Relight each sprite into 4-direction sheets
+                let mut all_sheets = Vec::new();
+                for sprite in &processed {
+                    let (sheet, _) = relight::four_dir_sheet(sprite);
+                    all_sheets.push(sheet);
+                }
+                if all_sheets.len() == 1 {
+                    all_sheets[0].save(&output)?;
+                } else {
+                    // Stack vertically: each row is one character's 4 views
+                    let sw = all_sheets[0].width();
+                    let sh = all_sheets[0].height();
+                    let mut combined = image::RgbaImage::new(sw, sh * all_sheets.len() as u32);
+                    for (i, s) in all_sheets.iter().enumerate() {
+                        image::imageops::overlay(&mut combined, s, 0, (i as u32 * sh) as i64);
+                    }
+                    combined.save(&output)?;
+                }
+                println!("saved: {output} ({count} sprites × 4 directions)");
             } else {
-                let sheet_img = sheet::pack_grid(&processed, 8);
-                sheet_img.save(&output)?;
+                if count == 1 {
+                    processed[0].save(&output)?;
+                } else {
+                    let sheet_img = sheet::pack_grid(&processed, 8);
+                    sheet_img.save(&output)?;
+                }
+                println!("saved: {output}");
             }
-            println!("saved: {output}");
         }
         Cmd::Swipe { image, verdict, class, store } => {
             let good = match verdict.to_lowercase().as_str() {
