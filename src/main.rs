@@ -118,13 +118,13 @@ enum Cmd {
         #[arg(long, default_value_t = 32)]
         img_size: u32,
     },
-    /// Extract silhouette and color-block training data for stage-aware cascade.
-    /// Creates silouette/ and colorblock/ subdirs alongside class dirs.
+    /// Extract structural layers for stage-aware cascade.
+    /// Generates 5-channel conditioning data: SDF, normal X/Y, outline, luminance.
     PrepStages {
         /// Path to training data directory with class subdirs.
         #[arg(short, long, default_value = "data_v2_32")]
         data: String,
-        /// Number of palette colors for color block-in stage.
+        /// Number of palette colors for color block-in stage (unused, kept for compat).
         #[arg(long, default_value_t = 8)]
         palette_colors: usize,
     },
@@ -547,9 +547,11 @@ fn main() -> anyhow::Result<()> {
             ];
 
             let data_path = std::path::Path::new(&data);
-            let struct_base = data_path.join("_structure");  // SDF + normals (3ch PNG)
-            let sil_base = data_path.join("_silhouettes");
+            let struct_base = data_path.join("_structure");  // RGBA: SDF, nx, ny, outline
+            let lum_base = data_path.join("_luminance");     // Grayscale: light/shadow
+            let sil_base = data_path.join("_silhouettes");   // Binary mask
             std::fs::create_dir_all(&struct_base)?;
+            std::fs::create_dir_all(&lum_base)?;
             std::fs::create_dir_all(&sil_base)?;
 
             let mut total = 0usize;
@@ -558,8 +560,10 @@ fn main() -> anyhow::Result<()> {
                 if !class_dir.is_dir() { continue; }
 
                 let struct_dir = struct_base.join(class_name);
+                let lum_dir = lum_base.join(class_name);
                 let sil_dir = sil_base.join(class_name);
                 std::fs::create_dir_all(&struct_dir)?;
+                std::fs::create_dir_all(&lum_dir)?;
                 std::fs::create_dir_all(&sil_dir)?;
 
                 let mut count = 0usize;
@@ -646,9 +650,38 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // Pack as RGB PNG: R=SDF, G=normal_x (0.5+0.5*nx), B=normal_y (0.5+0.5*ny)
-                    let mut struct_img = image::RgbImage::new(w as u32, h as u32);
+                    // Outline: pixels where SDF ≈ 0.5 (on the edge)
+                    // More precisely: mask=true but at least one neighbor is mask=false
+                    let mut outline = vec![0u8; w * h];
+                    for y in 0..h {
+                        for x in 0..w {
+                            let i = y * w + x;
+                            if !mask[i] { continue; }
+                            let has_bg = (x > 0 && !mask[i - 1])
+                                || (x < w - 1 && !mask[i + 1])
+                                || (y > 0 && !mask[i - w])
+                                || (y < h - 1 && !mask[i + w]);
+                            if has_bg { outline[i] = 255; }
+                        }
+                    }
+
+                    // Luminance from original sprite (0.299R + 0.587G + 0.114B)
+                    let mut lum = vec![0u8; w * h];
+                    for (x, y, px) in img.enumerate_pixels() {
+                        let i = y as usize * w + x as usize;
+                        if mask[i] {
+                            let l = 0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32;
+                            lum[i] = l.clamp(0.0, 255.0) as u8;
+                        }
+                    }
+
+                    // Structure: RGBA = SDF, normal_x, normal_y, outline
+                    let mut struct_img = image::RgbaImage::new(w as u32, h as u32);
+                    // Luminance: grayscale RGB
+                    let mut lum_img = image::RgbImage::new(w as u32, h as u32);
+                    // Silhouette: binary
                     let mut sil_img = image::RgbImage::new(w as u32, h as u32);
+
                     for y in 0..h {
                         for x in 0..w {
                             let i = y * w + x;
@@ -656,28 +689,32 @@ fn main() -> anyhow::Result<()> {
                                 let r = (dist[i] * 255.0) as u8;
                                 let g = ((0.5 + 0.5 * nx[i]) * 255.0) as u8;
                                 let b = ((0.5 + 0.5 * ny[i]) * 255.0) as u8;
-                                struct_img.put_pixel(x as u32, y as u32, image::Rgb([r, g, b]));
+                                struct_img.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, outline[i]]));
+                                lum_img.put_pixel(x as u32, y as u32, image::Rgb([lum[i], lum[i], lum[i]]));
                                 sil_img.put_pixel(x as u32, y as u32, image::Rgb([255, 255, 255]));
                             } else {
-                                struct_img.put_pixel(x as u32, y as u32, image::Rgb([0, 128, 128]));
+                                struct_img.put_pixel(x as u32, y as u32, image::Rgba([0, 128, 128, 0]));
+                                lum_img.put_pixel(x as u32, y as u32, image::Rgb([0, 0, 0]));
                                 sil_img.put_pixel(x as u32, y as u32, image::Rgb([0, 0, 0]));
                             }
                         }
                     }
                     struct_img.save(struct_dir.join(&fname))?;
+                    lum_img.save(lum_dir.join(&fname))?;
                     sil_img.save(sil_dir.join(&fname))?;
 
                     count += 1;
                 }
                 if count > 0 {
-                    println!("{class_name}: {count} sprites → structure map (SDF + normals)");
+                    println!("{class_name}: {count} sprites → 5-layer structure");
                 }
                 total += count;
             }
-            println!("total: {total} structure maps in {struct_base:?}");
-            println!("  R = signed distance field (depth)");
-            println!("  G = normal X (horizontal surface direction)");
-            println!("  B = normal Y (vertical surface direction)");
+            println!("total: {total} structure maps");
+            println!("  _structure/ RGBA: SDF(R), normal_x(G), normal_y(B), outline(A)");
+            println!("  _luminance/ grayscale: light/shadow from original");
+            println!("  _silhouettes/ binary: shape mask");
+            println!("  → 5 conditioning channels for detail model (8ch input: 5 cond + 3 noisy)");
         }
         Cmd::Train {
             data,
