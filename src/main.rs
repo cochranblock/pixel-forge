@@ -92,6 +92,9 @@ enum Cmd {
         /// Warm-up epochs: linear ramp from lr_min to lr.
         #[arg(long, default_value_t = 5)]
         warmup: usize,
+        /// Conditioning data dir for stage-aware training (silhouettes, colorblocks).
+        #[arg(long)]
+        condition: Option<String>,
     },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
@@ -114,6 +117,16 @@ enum Cmd {
         /// Image size (must match training data).
         #[arg(long, default_value_t = 32)]
         img_size: u32,
+    },
+    /// Extract silhouette and color-block training data for stage-aware cascade.
+    /// Creates silouette/ and colorblock/ subdirs alongside class dirs.
+    PrepStages {
+        /// Path to training data directory with class subdirs.
+        #[arg(short, long, default_value = "data_v2_32")]
+        data: String,
+        /// Number of palette colors for color block-in stage.
+        #[arg(long, default_value_t = 8)]
+        palette_colors: usize,
     },
     /// Generate pixel art using a trained model (no SD required).
     Generate {
@@ -526,6 +539,77 @@ fn main() -> anyhow::Result<()> {
         Cmd::Skeletons { data, img_size } => {
             train::compute_skeletons(&data, img_size)?;
         }
+        Cmd::PrepStages { data, palette_colors } => {
+            use image::imageops::FilterType;
+
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+
+            let data_path = std::path::Path::new(&data);
+            let sil_base = data_path.join("_silhouettes");
+            let cb_base = data_path.join("_colorblocks");
+            std::fs::create_dir_all(&sil_base)?;
+            std::fs::create_dir_all(&cb_base)?;
+
+            let mut total = 0usize;
+            for class_name in &class_names {
+                let class_dir = data_path.join(class_name);
+                if !class_dir.is_dir() { continue; }
+
+                let sil_dir = sil_base.join(class_name);
+                let cb_dir = cb_base.join(class_name);
+                std::fs::create_dir_all(&sil_dir)?;
+                std::fs::create_dir_all(&cb_dir)?;
+
+                let mut count = 0usize;
+                for entry in std::fs::read_dir(&class_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("png") { continue; }
+
+                    let img = image::open(&path)?.to_rgba8();
+                    let fname = entry.file_name();
+
+                    // Silhouette: any pixel with alpha > 0 becomes white, rest black
+                    let mut sil = image::RgbaImage::new(img.width(), img.height());
+                    for (x, y, px) in img.enumerate_pixels() {
+                        if px[3] > 10 {
+                            sil.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
+                        } else {
+                            sil.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+                        }
+                    }
+                    sil.save(sil_dir.join(&fname))?;
+
+                    // Color block: reduce to N colors via quantize then upscale back
+                    // Simple approach: posterize each channel to reduce color count
+                    let levels = (palette_colors as f32).cbrt().ceil() as u8;
+                    let step = if levels > 1 { 255 / (levels - 1) } else { 255 };
+                    let mut cb = image::RgbaImage::new(img.width(), img.height());
+                    for (x, y, px) in img.enumerate_pixels() {
+                        if px[3] > 10 {
+                            let r = (px[0] / step.max(1)) * step;
+                            let g = (px[1] / step.max(1)) * step;
+                            let b = (px[2] / step.max(1)) * step;
+                            cb.put_pixel(x, y, image::Rgba([r, g, b, 255]));
+                        } else {
+                            cb.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+                        }
+                    }
+                    cb.save(cb_dir.join(&fname))?;
+
+                    count += 1;
+                }
+                if count > 0 {
+                    println!("{class_name}: {count} sprites → silhouette + colorblock");
+                }
+                total += count;
+            }
+            println!("total: {total} stage pairs in {sil_base:?} and {cb_base:?}");
+        }
         Cmd::Train {
             data,
             output,
@@ -539,6 +623,7 @@ fn main() -> anyhow::Result<()> {
             v_pred,
             lr_min,
             warmup,
+            condition,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -553,6 +638,7 @@ fn main() -> anyhow::Result<()> {
                 v_prediction: v_pred,
                 lr_min,
                 warmup_epochs: warmup,
+                condition_dir: condition,
                 ..Default::default()
             };
             train::train(&config)?;
