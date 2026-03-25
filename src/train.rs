@@ -47,6 +47,9 @@ pub struct TrainConfig {
     pub img_size: u32,
     pub medium: bool,
     pub anvil: bool,
+    /// Conditioning data dir for stage-aware training (e.g. silhouettes).
+    /// When set, model takes 6 input channels (condition + noisy target).
+    pub condition_dir: Option<String>,
     /// Classifier-free guidance: probability of dropping class label during training.
     /// 0.0 = never drop (no CFG), 0.1 = drop 10% of the time (recommended).
     pub cfg_dropout: f64,
@@ -86,6 +89,7 @@ impl Default for TrainConfig {
             lr_min: 1e-5,
             warmup_epochs: 5,
             v_prediction: false,
+            condition_dir: None,
         }
     }
 }
@@ -445,6 +449,7 @@ fn train_inner(
     varmap: &VarMap,
     config: &TrainConfig,
     dataset: &PackedDataset,
+    cond_dataset: Option<&PackedDataset>,
     device: &Device,
 ) -> Result<()> {
     let n = dataset.labels.len();
@@ -551,7 +556,21 @@ fn train_inner(
 
             let (noisy_x, noise) = corrupt(&x_batch, &noise_amount, device)?;
 
-            let pred = model.forward(&noisy_x, &noise_amount, &y_batch)?;
+            // For conditioned training, concat conditioning channels to input
+            let model_input = if let Some(cond) = cond_dataset {
+                let mut cond_px = Vec::with_capacity(bs * stride);
+                for &idx in &indices[start..end] {
+                    let src_start = idx * stride;
+                    cond_px.extend_from_slice(&cond.pixels[src_start..src_start + stride]);
+                }
+                let cond_batch = Tensor::new(cond_px.as_slice(), device)?
+                    .reshape((bs, 3, sz, sz))?;
+                Tensor::cat(&[&cond_batch, &noisy_x], 1)? // (B, 6, H, W)
+            } else {
+                noisy_x.clone()
+            };
+
+            let pred = model.forward(&model_input, &noise_amount, &y_batch)?;
 
             // V-prediction: target = noise - clean (direction from clean to noise)
             // Clean-prediction: target = clean image
@@ -636,21 +655,33 @@ pub fn train(config: &TrainConfig) -> Result<()> {
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
 
+    let in_ch = if config.condition_dir.is_some() { 6 } else { 3 };
+    let cond_dataset = if let Some(ref cdir) = config.condition_dir {
+        println!("loading conditioning data from {cdir}...");
+        let cd = preprocess(cdir, config.img_size)?;
+        if cd.labels.len() != dataset.labels.len() {
+            anyhow::bail!("conditioning dataset size ({}) != training dataset size ({})", cd.labels.len(), dataset.labels.len());
+        }
+        Some(cd)
+    } else {
+        None
+    };
+
     if config.anvil {
         let model = AnvilUNet::new(vb)?;
         let params = AnvilUNet::param_count(&varmap);
         println!("model: Anvil (AnvilUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
-        train_inner(&model, &varmap, config, &dataset, &device)?;
+        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     } else if config.medium {
-        let model = MediumUNet::new(vb)?;
+        let model = MediumUNet::with_config(vb, crate::medium_unet::NUM_CLASSES, in_ch)?;
         let params = MediumUNet::param_count(&varmap);
-        println!("model: Quench (MediumUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
-        train_inner(&model, &varmap, config, &dataset, &device)?;
+        println!("model: Quench (MediumUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     } else {
-        let model = TinyUNet::new(vb)?;
+        let model = TinyUNet::with_config(vb, crate::tiny_unet::NUM_CLASSES, in_ch)?;
         let params = TinyUNet::param_count(&varmap);
-        println!("model: Cinder (TinyUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
-        train_inner(&model, &varmap, config, &dataset, &device)?;
+        println!("model: Cinder (TinyUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     }
 
     Ok(())

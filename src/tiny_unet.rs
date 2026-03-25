@@ -158,7 +158,12 @@ impl TinyUNet {
     }
 
     pub fn with_classes(vb: VarBuilder, n_classes: usize) -> Result<Self> {
-        let conv_in = nn::conv2d(3, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
+        Self::with_config(vb, n_classes, 3)
+    }
+
+    /// Configurable input channels (3 for standalone, 6 for conditioned generation).
+    pub fn with_config(vb: VarBuilder, n_classes: usize, in_channels: usize) -> Result<Self> {
+        let conv_in = nn::conv2d(in_channels, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
 
         // Time embedding: scalar → TIME_DIM → TIME_DIM
         let time_mlp1 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp1"))?;
