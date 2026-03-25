@@ -683,6 +683,7 @@ fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, dev
 
 /// CFG-guided denoising step: run model conditioned + unconditional,
 /// blend predictions to amplify class signal.
+/// For v-pred models, converts v→clean before CFG blend to avoid amplifying velocity.
 pub fn cfg_denoise(
     model: &dyn DiffusionModel,
     x: &Tensor,
@@ -692,14 +693,38 @@ pub fn cfg_denoise(
     cfg_scale: f64,
 ) -> candle_core::Result<Tensor> {
     if cfg_scale <= 1.0 {
-        // No guidance, just conditional
         return model.forward(x, t, class_tensor);
     }
     let cond = model.forward(x, t, class_tensor)?;
     let uncond = model.forward(x, t, null_class)?;
-    // guided = uncond + scale * (cond - uncond)
     let diff = (&cond - &uncond)?;
     &uncond + (diff * cfg_scale)?
+}
+
+/// CFG for v-pred models: convert v→clean before blending, then return clean.
+/// This prevents CFG scale from amplifying velocity values out of range.
+pub fn cfg_denoise_vpred(
+    model: &dyn DiffusionModel,
+    x: &Tensor,
+    t: &Tensor,
+    amount: f32,
+    class_tensor: &Tensor,
+    null_class: &Tensor,
+    cfg_scale: f64,
+) -> candle_core::Result<Tensor> {
+    let cond_v = model.forward(x, t, class_tensor)?;
+    let cond_clean = (x - (&cond_v * amount as f64)?)?;
+
+    if cfg_scale <= 1.0 {
+        return Ok(cond_clean);
+    }
+
+    let uncond_v = model.forward(x, t, null_class)?;
+    let uncond_clean = (x - (&uncond_v * amount as f64)?)?;
+
+    // CFG on clean predictions, not on raw velocity
+    let diff = (&cond_clean - &uncond_clean)?;
+    &uncond_clean + (diff * cfg_scale)?
 }
 
 /// Skeleton noise level — 30% noise, 70% skeleton.
@@ -878,26 +903,25 @@ pub fn sample_seeded(
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?; // (count, 3, H, W)
 
-    // When using skeleton, start schedule at SKELETON_NOISE instead of 1.0
-    let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+    // When using skeleton, scale the schedule so step 0 starts at SKELETON_NOISE
+    let max_noise: f32 = if use_skeleton { SKELETON_NOISE } else { 1.0 };
 
     for step in 0..steps {
-        let frac = step as f32 / steps as f32; // 0.0 -> 1.0
-        let amount = start_noise * (1.0 - frac); // ramp from start_noise -> 0
+        // Cosine schedule matching training
+        let t_frac = 1.0 - (step as f32 / steps as f32);
+        let amount = cosine_schedule(t_frac) * max_noise;
         let next_amount = if step + 1 < steps {
-            start_noise * (1.0 - (step + 1) as f32 / steps as f32)
+            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
+            cosine_schedule(next_frac) * max_noise
         } else {
             0.0
         };
 
         let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
-        let raw_out = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
-
-        // V-pred: clean = noisy - amount * v_pred
         let pred_clean = if is_v_pred {
-            (&x - (raw_out * amount as f64)?)?
+            cfg_denoise_vpred(&model, &x, &t, amount, &class_tensor, &null_class, cfg_scale)?
         } else {
-            raw_out
+            cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?
         };
 
         if next_amount > 1e-6 {
@@ -985,25 +1009,23 @@ pub fn sample_medium_seeded(
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?; // (count, 3, H, W)
 
-    let start_noise = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+    let max_noise: f32 = if use_skeleton { SKELETON_NOISE } else { 1.0 };
 
     for step in 0..steps {
-        let frac = step as f32 / steps as f32;
-        let amount = start_noise * (1.0 - frac);
+        let t_frac = 1.0 - (step as f32 / steps as f32);
+        let amount = cosine_schedule(t_frac) * max_noise;
         let next_amount = if step + 1 < steps {
-            start_noise * (1.0 - (step + 1) as f32 / steps as f32)
+            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
+            cosine_schedule(next_frac) * max_noise
         } else {
             0.0
         };
 
         let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
-        let raw_out = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?;
-
-        // V-pred: clean = noisy - amount * v_pred
         let pred_clean = if is_v_pred {
-            (&x - (raw_out * amount as f64)?)?
+            cfg_denoise_vpred(&model, &x, &t, amount, &class_tensor, &null_class, cfg_scale)?
         } else {
-            raw_out
+            cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?
         };
 
         if next_amount > 1e-6 {
@@ -1063,11 +1085,10 @@ pub fn sample_anvil(
             let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
 
             let t = Tensor::new(&[amount], &device)?;
-            let raw_out = cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?;
             let pred_clean = if is_v_pred {
-                (&x - (raw_out * amount as f64)?)?
+                cfg_denoise_vpred(&model, &x, &t, amount, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?
             } else {
-                raw_out
+                cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?
             };
 
             if next_amount > 1e-6 {
