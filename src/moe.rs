@@ -50,11 +50,10 @@ fn ddim_step(
     v_pred: bool,
 ) -> candle_core::Result<Tensor> {
     let t = Tensor::new(&[amount], device)?;
-    let raw_out = train::cfg_denoise(model, x, &t, class_tensor, null_class, cfg_scale)?;
     let pred_clean = if v_pred {
-        (x - (raw_out * amount as f64)?)?
+        train::cfg_denoise_vpred(model, x, &t, amount, class_tensor, null_class, cfg_scale)?
     } else {
-        raw_out
+        train::cfg_denoise(model, x, &t, class_tensor, null_class, cfg_scale)?
     };
 
     if next_amount > 1e-6 {
@@ -153,11 +152,10 @@ pub fn cascade_sample(
             };
 
             let t = Tensor::new(&[amount], &device)?;
-            let raw_out = train::cfg_denoise(&cinder, &x, &t, &class_tensor, &null_class, c_cfg)?;
             let pred_clean = if cinder_v_pred {
-                (&x - (raw_out * amount as f64)?)?
+                train::cfg_denoise_vpred(&cinder, &x, &t, amount, &class_tensor, &null_class, c_cfg)?
             } else {
-                raw_out
+                train::cfg_denoise(&cinder, &x, &t, &class_tensor, &null_class, c_cfg)?
             };
 
             // Expert correction during detail phase
