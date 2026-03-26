@@ -339,6 +339,118 @@ pub fn anvil_with_gate(
     Ok(accepted)
 }
 
+/// Stage-aware cascade: Cinder-sil → structure map → Quench-detail (6ch).
+/// The full pipeline: generate silhouette, compute SDF+normals, paint sprite.
+pub fn stage_cascade_sample(
+    sil_path: &str,
+    detail_path: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    sil_steps: usize,
+    detail_steps: usize,
+) -> Result<Vec<RgbaImage>> {
+    let device = crate::pipeline::best_device();
+
+    // Load Cinder-sil (3ch → silhouette)
+    println!("loading Cinder-sil from {sil_path}...");
+    let sil_classes = train::detect_class_count_pub(sil_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
+    let has_null_sil = sil_classes > 15;
+    let mut sil_vm = VarMap::new();
+    let sil_vb = VarBuilder::from_varmap(&sil_vm, DType::F32, &device);
+    let sil_model = TinyUNet::with_classes(sil_vb, sil_classes)?;
+    crate::quantize::load_varmap(&mut sil_vm, sil_path)?;
+
+    // Load Quench-detail (6ch → sprite)
+    println!("loading Quench-detail from {detail_path}...");
+    let det_classes = train::detect_class_count_pub(detail_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
+    let has_null_det = det_classes > 15;
+    let mut det_vm = VarMap::new();
+    let det_vb = VarBuilder::from_varmap(&det_vm, DType::F32, &device);
+    let det_model = MediumUNet::with_config(det_vb, det_classes, 6)?;
+    crate::quantize::load_varmap(&mut det_vm, detail_path)?;
+
+    let sil_cfg = if has_null_sil { train::DEFAULT_CFG_SCALE } else { 1.0 };
+    let det_cfg = if has_null_det { train::DEFAULT_CFG_SCALE } else { 1.0 };
+
+    let max_class = (sil_classes.min(det_classes) - 1) as u32;
+    let class_tensor = Tensor::new(&[class_id.min(max_class)], &device)?;
+    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
+    let sz = img_size as usize;
+
+    println!("stage cascade: {} sil steps → structure → {} detail steps", sil_steps, detail_steps);
+
+    let mut images = Vec::new();
+
+    for i in 0..count {
+        // Phase 1: Generate silhouette from noise
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, sz, sz), &device)?;
+        for step in 0..sil_steps {
+            let t_frac = 1.0 - (step as f32 / sil_steps as f32);
+            let amount = train::cosine_schedule(t_frac);
+            let next_amount = if step + 1 < sil_steps {
+                let nf = 1.0 - ((step + 1) as f32 / sil_steps as f32);
+                train::cosine_schedule(nf)
+            } else { 0.0 };
+            x = ddim_step(&sil_model, &x, amount, next_amount, &class_tensor, &null_class, sil_cfg, &device, false)?;
+        }
+        let sil = x.clamp(0.0, 1.0)?;
+
+        // Phase 2: Threshold silhouette to binary, then compute structure
+        // Average RGB channels, threshold at 0.3 to get clean binary mask
+        let sil_mean = sil.mean_keepdim(1)?; // (1, 1, H, W)
+        let threshold = Tensor::new(&[0.3f32], &device)?.broadcast_as(sil_mean.shape())?;
+        let mask = sil_mean.ge(&threshold)?;  // boolean mask
+        let ones = mask.ones_like()?.to_dtype(DType::F32)?;
+        let zeros = mask.zeros_like()?.to_dtype(DType::F32)?;
+        let binary = mask.where_cond(&ones, &zeros)?;
+        let binary_3ch = Tensor::cat(&[&binary, &binary, &binary], 1)?; // (1, 3, H, W)
+        let sil_img = tensor_to_rgba(&binary_3ch, img_size)?;
+        let (sdf, nx, ny, _outline) = crate::relight::compute_structure(&sil_img);
+
+        // Pack as 3ch tensor: R=SDF, G=0.5+0.5*nx, B=0.5+0.5*ny
+        let mut struct_px = vec![0.0f32; 3 * sz * sz];
+        for y in 0..sz {
+            for px in 0..sz {
+                let idx = y * sz + px;
+                struct_px[idx] = sdf[idx];                           // R = SDF
+                struct_px[sz * sz + idx] = 0.5 + 0.5 * nx[idx];     // G = normal X
+                struct_px[2 * sz * sz + idx] = 0.5 + 0.5 * ny[idx]; // B = normal Y
+            }
+        }
+        let struct_tensor = Tensor::from_vec(struct_px, (1, 3, sz, sz), &device)?;
+
+        // Phase 3: Quench-detail — 6ch input (structure + noisy sprite)
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, sz, sz), &device)?;
+        for step in 0..detail_steps {
+            let t_frac = 1.0 - (step as f32 / detail_steps as f32);
+            let amount = train::cosine_schedule(t_frac);
+            let next_amount = if step + 1 < detail_steps {
+                let nf = 1.0 - ((step + 1) as f32 / detail_steps as f32);
+                train::cosine_schedule(nf)
+            } else { 0.0 };
+
+            // Concat structure + noisy: (1, 6, H, W)
+            let input_6ch = Tensor::cat(&[&struct_tensor, &x], 1)?;
+            let t = Tensor::new(&[amount], &device)?;
+            let pred_clean = train::cfg_denoise(&det_model, &input_6ch, &t, &class_tensor, &null_class, det_cfg)?;
+
+            if next_amount > 1e-6 {
+                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            } else {
+                x = pred_clean;
+            }
+        }
+
+        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
+        images.push(img);
+        println!("  stage cascade sample {}/{count}", i + 1);
+    }
+
+    Ok(images)
+}
+
 /// Convert a (1, 3, H, W) f32 tensor to an RGBA image.
 fn tensor_to_rgba(x: &Tensor, img_size: u32) -> Result<RgbaImage> {
     let x = (x * 255.0)?.to_dtype(DType::U8)?;

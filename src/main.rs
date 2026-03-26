@@ -131,6 +131,35 @@ enum Cmd {
         #[arg(long, default_value_t = 8)]
         palette_colors: usize,
     },
+    /// Stage cascade: Cinder-sil → structure map → Quench-detail → sprite.
+    StageCascade {
+        /// Class to generate.
+        class: String,
+        /// Cinder-sil model (silhouette generator).
+        #[arg(long, default_value = "pixel-forge-cinder-sil.safetensors")]
+        sil_model: String,
+        /// Quench-detail model (6ch conditioned detail filler).
+        #[arg(long, default_value = "pixel-forge-quench-detail.safetensors")]
+        detail_model: String,
+        /// Number of sprites.
+        #[arg(short, long, default_value_t = 1)]
+        count: u32,
+        /// Silhouette generation steps.
+        #[arg(long, default_value_t = 20)]
+        sil_steps: usize,
+        /// Detail generation steps.
+        #[arg(long, default_value_t = 30)]
+        detail_steps: usize,
+        /// Palette.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output file.
+        #[arg(short, long, default_value = "stage-cascade.png")]
+        output: String,
+        /// Generate 4-directional sprite sheet via relighting.
+        #[arg(long)]
+        four_dir: bool,
+    },
     /// Relight a sprite into 4-directional views (front/left/right/back).
     /// Uses SDF + normal maps — no model needed, pure math.
     Relight {
@@ -553,6 +582,57 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Curate { raw, output, size } => {
             curate::curate(&raw, &output, size)?;
+        }
+        Cmd::StageCascade { class, sil_model, detail_model, count, sil_steps, detail_steps, palette: palette_name, output, four_dir } => {
+            let class_names = [
+                "character", "weapon", "potion", "terrain", "enemy",
+                "tree", "building", "animal", "effect", "food",
+                "armor", "tool", "vehicle", "ui", "misc",
+            ];
+            let class_id = class_names.iter()
+                .position(|&n| n == class.to_lowercase())
+                .unwrap_or(14) as u32;
+
+            let pal = palette::load_palette(&palette_name)?;
+            let raw_images = moe::stage_cascade_sample(
+                &sil_model, &detail_model, class_id, 32, count, sil_steps, detail_steps,
+            )?;
+
+            let processed: Vec<image::RgbaImage> = raw_images
+                .into_iter()
+                .map(|img| {
+                    let snapped = grid::snap_to_grid(&img, 32);
+                    palette::quantize(&snapped, &pal)
+                })
+                .collect();
+
+            if four_dir {
+                let mut all_sheets = Vec::new();
+                for sprite in &processed {
+                    let (sheet, _) = relight::four_dir_sheet(sprite);
+                    all_sheets.push(sheet);
+                }
+                if all_sheets.len() == 1 {
+                    all_sheets[0].save(&output)?;
+                } else {
+                    let sw = all_sheets[0].width();
+                    let sh = all_sheets[0].height();
+                    let mut combined = image::RgbaImage::new(sw, sh * all_sheets.len() as u32);
+                    for (i, s) in all_sheets.iter().enumerate() {
+                        image::imageops::overlay(&mut combined, s, 0, (i as u32 * sh) as i64);
+                    }
+                    combined.save(&output)?;
+                }
+                println!("saved: {output} ({count} × 4 directions)");
+            } else {
+                if count == 1 {
+                    processed[0].save(&output)?;
+                } else {
+                    let sheet_img = sheet::pack_grid(&processed, 8);
+                    sheet_img.save(&output)?;
+                }
+                println!("saved: {output}");
+            }
         }
         Cmd::Relight { image, output, split } => {
             let img = image::open(&image)?.to_rgba8();
