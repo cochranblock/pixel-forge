@@ -558,8 +558,8 @@ fn train_inner(
                 noise_raw
             };
 
-            // Note: fp16 flag accepted but not yet active — Candle needs
-            // dtype-aware tensor creation in UNet internals for full f16 training.
+            // TODO: f16 training blocked on Candle autocast support.
+            // UNets are dtype-aware (store vb.dtype()) but optimizer needs f32 vars.
 
             let (noisy_x, noise) = corrupt(&x_batch, &noise_amount, device)?;
 
@@ -655,7 +655,8 @@ fn train_inner(
 /// Train — dispatches to Tiny or Medium based on config.
 pub fn train(config: &TrainConfig) -> Result<()> {
     let device = crate::pipeline::best_device();
-    let dtype = DType::F32; // f16 training needs deeper Candle refactor — tracked for later
+    // Weights always f32 for optimizer stability. Forward pass cast to f16 when --fp16.
+    let dtype = DType::F32;
 
     let dataset = preprocess(&config.data_dir, config.img_size)?;
 
