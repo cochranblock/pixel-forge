@@ -159,6 +159,9 @@ enum Cmd {
         /// Generate 4-directional sprite sheet via relighting.
         #[arg(long)]
         four_dir: bool,
+        /// Skip silhouette generation, use real structure maps from this dir.
+        #[arg(long)]
+        real_struct: Option<String>,
     },
     /// Relight a sprite into 4-directional views (front/left/right/back).
     /// Uses SDF + normal maps — no model needed, pure math.
@@ -583,7 +586,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Curate { raw, output, size } => {
             curate::curate(&raw, &output, size)?;
         }
-        Cmd::StageCascade { class, sil_model, detail_model, count, sil_steps, detail_steps, palette: palette_name, output, four_dir } => {
+        Cmd::StageCascade { class, sil_model, detail_model, count, sil_steps, detail_steps, palette: palette_name, output, four_dir, real_struct } => {
             let class_names = [
                 "character", "weapon", "potion", "terrain", "enemy",
                 "tree", "building", "animal", "effect", "food",
@@ -594,9 +597,16 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or(14) as u32;
 
             let pal = palette::load_palette(&palette_name)?;
-            let raw_images = moe::stage_cascade_sample(
-                &sil_model, &detail_model, class_id, 32, count, sil_steps, detail_steps,
-            )?;
+            let raw_images = if let Some(ref struct_dir) = real_struct {
+                // Bypass silhouette generation — use real structure maps
+                moe::detail_only_sample(
+                    &detail_model, struct_dir, &class, class_id, 32, count, detail_steps,
+                )?
+            } else {
+                moe::stage_cascade_sample(
+                    &sil_model, &detail_model, class_id, 32, count, sil_steps, detail_steps,
+                )?
+            };
 
             let processed: Vec<image::RgbaImage> = raw_images
                 .into_iter()
