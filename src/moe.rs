@@ -451,6 +451,89 @@ pub fn stage_cascade_sample(
     Ok(images)
 }
 
+/// Detail-only: load real structure maps from disk, run Quench-detail only.
+/// For testing — bypasses silhouette generation.
+pub fn detail_only_sample(
+    detail_path: &str,
+    struct_dir: &str,
+    class_name: &str,
+    class_id: u32,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+) -> Result<Vec<RgbaImage>> {
+    let device = crate::pipeline::best_device();
+    let sz = img_size as usize;
+
+    // Load Quench-detail (6ch)
+    println!("loading Quench-detail from {detail_path}...");
+    let det_classes = train::detect_class_count_pub(detail_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
+    let has_null = det_classes > 15;
+    let mut det_vm = VarMap::new();
+    let det_vb = VarBuilder::from_varmap(&det_vm, DType::F32, &device);
+    let det_model = MediumUNet::with_config(det_vb, det_classes, 6)?;
+    crate::quantize::load_varmap(&mut det_vm, detail_path)?;
+
+    let cfg = if has_null { train::DEFAULT_CFG_SCALE } else { 1.0 };
+    let class_tensor = Tensor::new(&[class_id.min((det_classes - 1) as u32)], &device)?;
+    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
+
+    // Load real structure PNGs
+    let struct_class_dir = std::path::Path::new(struct_dir).join(class_name);
+    let mut pngs: Vec<_> = std::fs::read_dir(&struct_class_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("png"))
+        .collect();
+    pngs.sort_by_key(|e| e.file_name());
+
+    println!("detail-only: {} real structures from {}, {} steps", pngs.len().min(count as usize), struct_class_dir.display(), steps);
+
+    let mut images = Vec::new();
+    for i in 0..count.min(pngs.len() as u32) {
+        let img = image::open(pngs[i as usize].path())?.to_rgb8();
+        // Convert to tensor (channel-first, normalized)
+        let mut px = vec![0.0f32; 3 * sz * sz];
+        for y in 0..sz {
+            for x in 0..sz {
+                let p = img.get_pixel(x as u32, y as u32);
+                let idx = y * sz + x;
+                px[idx] = p[0] as f32 / 255.0;
+                px[sz * sz + idx] = p[1] as f32 / 255.0;
+                px[2 * sz * sz + idx] = p[2] as f32 / 255.0;
+            }
+        }
+        let struct_tensor = Tensor::from_vec(px, (1, 3, sz, sz), &device)?;
+
+        // Run Quench-detail: structure + noise → sprite
+        let mut x = Tensor::rand(0f32, 1f32, (1, 3, sz, sz), &device)?;
+        for step in 0..steps {
+            let t_frac = 1.0 - (step as f32 / steps as f32);
+            let amount = train::cosine_schedule(t_frac);
+            let next_amount = if step + 1 < steps {
+                let nf = 1.0 - ((step + 1) as f32 / steps as f32);
+                train::cosine_schedule(nf)
+            } else { 0.0 };
+
+            let input_6ch = Tensor::cat(&[&struct_tensor, &x], 1)?;
+            let t = Tensor::new(&[amount], &device)?;
+            let pred_clean = train::cfg_denoise(&det_model, &input_6ch, &t, &class_tensor, &null_class, cfg)?;
+
+            if next_amount > 1e-6 {
+                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            } else {
+                x = pred_clean;
+            }
+        }
+
+        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
+        images.push(img);
+        println!("  detail sample {}/{}", i + 1, count);
+    }
+
+    Ok(images)
+}
+
 /// Convert a (1, 3, H, W) f32 tensor to an RGBA image.
 fn tensor_to_rgba(x: &Tensor, img_size: u32) -> Result<RgbaImage> {
     let x = (x * 255.0)?.to_dtype(DType::U8)?;
