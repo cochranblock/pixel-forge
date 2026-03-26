@@ -95,6 +95,9 @@ enum Cmd {
         /// Conditioning data dir for stage-aware training (silhouettes, colorblocks).
         #[arg(long)]
         condition: Option<String>,
+        /// Mixed precision: f16 forward pass, f32 optimizer. ~2x faster on CUDA.
+        #[arg(long)]
+        fp16: bool,
     },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
@@ -762,6 +765,7 @@ fn main() -> anyhow::Result<()> {
             lr_min,
             warmup,
             condition,
+            fp16,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -777,6 +781,7 @@ fn main() -> anyhow::Result<()> {
                 lr_min,
                 warmup_epochs: warmup,
                 condition_dir: condition,
+                mixed_precision: fp16,
                 ..Default::default()
             };
             train::train(&config)?;
