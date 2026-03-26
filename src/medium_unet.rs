@@ -23,13 +23,13 @@ pub const NUM_CLASSES: usize = 16; // 15 classes + 1 null (CFG unconditional)
 const TIME_DIM: usize = 128;
 
 /// Sinusoidal timestep embedding.
-fn timestep_embedding(timestep: &Tensor, dim: usize, device: &Device) -> Result<Tensor> {
+fn timestep_embedding(timestep: &Tensor, dim: usize, dtype: DType, device: &Device) -> Result<Tensor> {
     let half = dim / 2;
     let freqs: Vec<f32> = (0..half)
         .map(|i| (-(i as f64 * std::f64::consts::LN_2 * 2.0 / half as f64).exp()) as f32)
         .collect();
-    let freqs = Tensor::new(freqs.as_slice(), device)?;
-    let args = timestep.to_dtype(DType::F32)?.unsqueeze(1)?.broadcast_mul(&freqs.unsqueeze(0)?)?;
+    let freqs = Tensor::new(freqs.as_slice(), device)?.to_dtype(dtype)?;
+    let args = timestep.to_dtype(dtype)?.unsqueeze(1)?.broadcast_mul(&freqs.unsqueeze(0)?)?;
     let emb = Tensor::cat(&[args.cos()?, args.sin()?], 1)?;
     Ok(emb)
 }
@@ -126,7 +126,7 @@ impl SelfAttention {
         let scale = (self.channels as f32).sqrt();
         let k_t = k.transpose(1, 2)?.contiguous()?;
         let attn = q.matmul(&k_t)?.broadcast_div(
-            &Tensor::new(scale, x.device())?
+            &Tensor::new(scale, x.device())?.to_dtype(x.dtype())?
         )?;
         let attn = nn::ops::softmax(&attn, 2)?;
         let out = attn.matmul(&v)?; // (B, HW, C)
@@ -199,6 +199,8 @@ pub struct MediumUNet {
     upsamples: Vec<Upsample>,
     conv_out: nn::Conv2d,
     gn_out: nn::GroupNorm,
+    // Model dtype for f16-aware tensor creation
+    dtype: DType,
 }
 
 impl MediumUNet {
@@ -214,6 +216,7 @@ impl MediumUNet {
 
     /// Configurable input channels (3 for standalone, 6 for conditioned generation).
     pub fn with_config(vb: VarBuilder, num_classes: usize, in_channels: usize) -> Result<Self> {
+        let dtype = vb.dtype();
         let conv_in = nn::conv2d(in_channels, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
 
         let time_mlp1 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp1"))?;
@@ -268,6 +271,7 @@ impl MediumUNet {
             mid_block1, mid_attn, mid_block2,
             up_blocks, upsamples,
             conv_out, gn_out,
+            dtype,
         })
     }
 
@@ -275,7 +279,7 @@ impl MediumUNet {
     pub fn encode(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> Result<(Tensor, Vec<Tensor>, Tensor)> {
         let device = x.device();
 
-        let t_emb = timestep_embedding(timestep, TIME_DIM, device)?;
+        let t_emb = timestep_embedding(timestep, TIME_DIM, self.dtype, device)?;
         let t_emb = candle_nn::ops::silu(&self.time_mlp1.forward(&t_emb)?)?;
         let t_emb = self.time_mlp2.forward(&t_emb)?;
         let c_emb = self.class_emb.forward(class_id)?;
