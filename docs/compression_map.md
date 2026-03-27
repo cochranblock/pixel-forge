@@ -50,6 +50,13 @@ Tokenization for traceability. Kova P13 compliant.
 | f38 | detect_class_count | train |
 | f39 | load_palette | palette |
 | f40 | quantize | palette |
+| f41 | lookup | class_cond |
+| f42 | cond_tensors | train |
+| f43 | detect_model_version | train |
+| f44 | stage_cascade_sample | moe |
+| f45 | detail_only_sample | moe |
+| f46 | ingest_gemini | main |
+| f47 | prep_stages | main |
 
 ## Types (tN)
 
@@ -80,6 +87,8 @@ Tokenization for traceability. Kova P13 compliant.
 | t22 | SwipeStats | swipe_store |
 | t23 | Discriminator | discriminator |
 | t24 | DiscriminatorTrainConfig | discriminator |
+| t25 | ClassCond | class_cond |
+| t26 | ClassConditioner | tiny_unet/medium_unet/anvil_unet |
 
 ## Models (mN)
 
@@ -117,6 +126,9 @@ Tokenization for traceability. Kova P13 compliant.
 | M21 | plugin | Kova plugin interface |
 | M22 | poa | Proof of Authorship signing |
 | M23 | pipeline | SD pipeline (optional, desktop) |
+| M24 | class_cond | Hybrid class conditioning (super-cat + tags) |
+| M25 | relight | 4-directional sprites from SDF + normals |
+| M26 | quantize | f32 → f16 model quantization |
 
 ## CLI Commands (cN)
 
@@ -141,27 +153,36 @@ Tokenization for traceability. Kova P13 compliant.
 | c16 | probe | Probe device capabilities |
 | c17 | cluster-deploy | Deploy to cluster nodes |
 | c18 | cluster-sync | Sync models to cluster |
+| c19 | stage-cascade | Cinder-sil → structure → Quench-detail |
+| c20 | ingest-gemini | Slice Gemini sprite sheets into tiles |
+| c21 | prep-stages | Extract structure maps for conditioning |
+| c22 | relight | 4-directional sprite sheet from SDF |
+| c23 | skeletons | Precompute per-class skeleton images |
 
-## Class IDs
+## Class Conditioning (v2 — Hybrid)
 
-| ID | Name |
-|----|------|
-| 0 | character |
-| 1 | weapon |
-| 2 | potion |
-| 3 | terrain |
-| 4 | enemy |
-| 5 | tree |
-| 6 | building |
-| 7 | animal |
-| 8 | effect |
-| 9 | food |
-| 10 | armor |
-| 11 | tool |
-| 12 | vehicle |
-| 13 | ui |
-| 14 | misc |
-| 15 | (null/CFG) |
+Replaced integer class IDs with hybrid super-category + binary tags.
+See `src/class_cond.rs` for full taxonomy (108 class dirs mapped).
+
+### Super-Categories
+
+| ID | Name | Examples |
+|----|------|----------|
+| 0 | humanoid | character, elf, knight, hero_* |
+| 1 | creature | animal, bird, cat_*, slime |
+| 2 | monster | enemy, dragon, demon, alien |
+| 3 | weapon | sword, gun, staff_wand |
+| 4 | equipment | armor, helmet, shield, key |
+| 5 | consumable | potion, food, gem_treasure |
+| 6 | terrain | terrain, floor, wall, water_lava |
+| 7 | nature | tree, tree_*, bush_flower |
+| 8 | structure | building, furniture_*, vehicle_* |
+| 9 | ui_fx | ui, effect, fx_*, misc |
+| 10 | (null/CFG) | unconditional |
+
+### Binary Tags
+
+`[alive, humanoid, held_item, worn, nature, built, magical, tech, small, hostile, edible, ui]`
 
 ## Palette IDs
 
