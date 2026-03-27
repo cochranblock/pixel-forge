@@ -22,7 +22,7 @@ Generate game-ready pixel art sprites from tiny diffusion models that fit in a m
 
 ## What It Does
 
-- **Generate** pixel art sprites from 16 classes (character, weapon, terrain, enemy, etc.)
+- **Generate** pixel art sprites from 108 class dirs via hybrid conditioning (10 super-categories + 12 binary tags)
 - **Train** your own models on curated artist-made pixel art datasets
 - **Three tiers** — Cinder (4.2 MB, fast), Quench (22 MB, balanced), Anvil (64 MB, highest quality)
 - **f16 quantization** — halve model size for mobile (Cinder: 2.1 MB, Quench: 11 MB)
@@ -56,11 +56,11 @@ Generate game-ready pixel art sprites from tiny diffusion models that fit in a m
 ## Quick Start
 
 ```bash
-# Train Cinder (tiny, ~2 min on GPU)
-cargo run --release -- train --data data --epochs 100 --img-size 16
+# Train Cinder (tiny, ~10 hrs on RTX 3070 with 75K tiles)
+cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32
 
-# Train Quench (medium, ~20 min on GPU)
-cargo run --release -- train --data data --epochs 100 --img-size 16 --medium
+# Train Quench (medium)
+cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32 --medium
 
 # Generate
 cargo run --release -- generate character --palette stardew -o hero.png
@@ -82,6 +82,7 @@ cargo run --release
 | `generate <class>` | Generate via trained model |
 | `train` | Train tiny/medium/XL model from dataset |
 | `cascade <class>` | MoE cascade: Cinder → Quench + Experts |
+| `stage-cascade <class>` | Cinder-sil → structure → Quench-detail → sprite |
 | `auto <class>` | Auto-detect GPU, pick best model |
 | `quantize <model>` | Convert f32 → f16 (halves file size) |
 | `train-experts` | Train 4 expert heads on frozen Quench |
@@ -92,6 +93,9 @@ cargo run --release
 | `pipeline` | Full pipeline: generate → judge → combine → render |
 | `forge <class>` | Generate → discriminator gate → PoA sign |
 | `curate` | Slice sprite sheets into training tiles |
+| `ingest-gemini` | Slice Gemini sprite sheets into training tiles |
+| `prep-stages` | Extract structure maps for stage-aware cascade |
+| `relight <image>` | 4-directional sprite sheet via SDF + normals |
 | `swipe <image> <verdict>` | Record good/bad judgments |
 | `judge <input>` | Score sprite quality |
 | `probe` | Device capability detection |
@@ -123,7 +127,7 @@ cargo run --release
 
 ## Training Pipeline
 
-- **52,139 curated tiles** from 7 quality-gated CC0/CC-BY sources
+- **75,182 curated tiles** from 7 CC0/CC-BY sources + Gemini-generated sprites across 108 class dirs
 - No AI-generated images. No copyrighted game rips.
 - Cosine noise schedule + min-SNR weighting + CFG dropout (10%) + EMA tracking
 - Zero disk I/O during training — all data in RAM from bincode+zstd cache
@@ -165,7 +169,7 @@ See [data/SOURCES.md](data/SOURCES.md) for full attribution.
 | CLI | clap |
 | GPU Scheduling | kova c2 gpu (file-based lock + priority queue) |
 
-Zero Python. Zero JavaScript. One language. 9,162 lines of Rust.
+Zero Python. Zero JavaScript. One language. 11,137 lines of Rust.
 
 ## Attribution
 

@@ -11,9 +11,9 @@ Part of the Cochran Block ecosystem. Powered by KOVA. Human direction, AI execut
 | Build (Metal) | `cargo build --release -p pixel-forge` |
 | Build (CUDA) | `cargo build --release -p pixel-forge --features cuda --no-default-features` |
 | Build (CPU) | `cargo build --release -p pixel-forge --no-default-features` |
-| Train Cinder | `cargo run --release -- train --data data --epochs 100 --img-size 16` |
-| Train Quench | `cargo run --release -- train --data data --epochs 100 --img-size 16 --medium` |
-| Train Anvil | `cargo run --release -- train --data data --epochs 100 --img-size 16 --xl` |
+| Train Cinder | `cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32` |
+| Train Quench | `cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32 --medium` |
+| Train Anvil | `cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32 --xl` |
 | Train Experts | `cargo run --release -- train-experts --data data --epochs 50` |
 | Train Judge | `cargo run --release -- train-judge` |
 | Generate | `cargo run --release -- generate character --palette stardew` |
@@ -44,10 +44,13 @@ Part of the Cochran Block ecosystem. Powered by KOVA. Human direction, AI execut
 | lora | src/lora.rs | Rank-4 LoRA adapters for TinyUNet |
 | discriminator | src/discriminator.rs | Quality gate — binary classifier |
 | palette | src/palette.rs | Color palettes + quantization |
+| class_cond | src/class_cond.rs | Hybrid conditioning: 10 super-categories + 12 binary tags |
 | plugin | src/plugin.rs | JSON protocol for kova integration |
 | poa | src/poa.rs | Proof of Authorship signing |
 | pipeline | src/pipeline.rs | SD pipeline (optional, desktop) |
 | gpu_lock | src/gpu_lock.rs | File-based GPU lock for training |
+| relight | src/relight.rs | 4-directional sprites from SDF + normals |
+| quantize | src/quantize.rs | f32 → f16 model quantization |
 
 ## Model Tiers
 
@@ -89,11 +92,21 @@ Key ranges: f0–f40 (functions), t0–t24 (types), m0–m2 (models), c0–c18 (
 - Error handling: anyhow (not thiserror — standalone project)
 - No Python. No JavaScript. Pure Rust.
 
+## Class Conditioning (v2)
+
+Hybrid system replacing the old 16-class integer embeddings:
+- **10 super-categories** — small embedding table (11 entries incl. CFG null)
+- **12 binary tags** — `[alive, humanoid, held_item, worn, nature, built, magical, tech, small, hostile, edible, ui]`
+- 108 class dirs mapped in `src/class_cond.rs`
+- `class_cond::lookup("dragon")` → super=monster, tags=[alive, hostile, magical]
+- New classes = new tag combos, zero retraining
+
 ## Training Data
 
-- 52,139 curated tiles from 7 CC0/CC-BY sources
-- No AI-generated images. No copyrighted game rips.
-- Data dir: `data/` with bincode+zstd cache
+- 75,182 curated tiles from 7 CC0/CC-BY sources + Gemini-generated sprites
+- 108 class directories in `data_v2_32/`
+- No copyrighted game rips.
+- Data dir: `data_v2_32/` with bincode+zstd cache (v2 format with super_ids + tags)
 - Sources documented in `data/SOURCES.md`
 
 ## Anti-Patterns
