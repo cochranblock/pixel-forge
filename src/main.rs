@@ -99,6 +99,16 @@ enum Cmd {
         #[arg(long)]
         fp16: bool,
     },
+    /// Ingest Gemini-generated sprite sheets into training data.
+    /// Slices grids, removes backgrounds, downscales to 32x32, sorts by filename.
+    IngestGemini {
+        /// Path to directory of Gemini output PNGs (named CLASS_batchN.png).
+        #[arg(short, long, default_value = "data/raw/gemini")]
+        input: String,
+        /// Output training data directory.
+        #[arg(short, long, default_value = "data_v2_32")]
+        output: String,
+    },
     /// Curate raw downloaded datasets into class-sorted training directories.
     Curate {
         /// Path to raw downloads directory.
@@ -642,6 +652,99 @@ fn main() -> anyhow::Result<()> {
                     sheet_img.save(&output)?;
                 }
                 println!("saved: {output}");
+            }
+        }
+        Cmd::IngestGemini { input, output } => {
+            let input_path = std::path::Path::new(&input);
+            let output_path = std::path::Path::new(&output);
+
+            let mut total = 0usize;
+            let mut class_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+            for entry in std::fs::read_dir(input_path)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("png") { continue; }
+
+                let fname = entry.file_name().to_string_lossy().to_string();
+                // Parse class from filename: CLASS_batchN.png or CLASS.png
+                let class_name = fname.split('_').next()
+                    .unwrap_or("misc")
+                    .to_lowercase()
+                    .replace("-", "_");
+
+                let img = image::open(&path)?.to_rgba8();
+                let w = img.width();
+                let h = img.height();
+
+                // Auto-detect grid: try common cell sizes
+                let cell_size = if w >= 6 * 128 && h >= 5 * 128 { 128 }
+                    else if w >= 6 * 64 && h >= 5 * 64 { 64 }
+                    else if w >= 6 * 32 && h >= 5 * 32 { 32 }
+                    else { (w / 6).max(32) as u32 };
+
+                let cols = w / cell_size;
+                let rows = h / cell_size;
+
+                let class_dir = output_path.join(&class_name);
+                std::fs::create_dir_all(&class_dir)?;
+
+                let mut file_count = 0usize;
+                for row in 0..rows {
+                    for col in 0..cols {
+                        let x0 = col * cell_size;
+                        let y0 = row * cell_size;
+                        let cell = image::imageops::crop_imm(&img, x0, y0, cell_size, cell_size).to_image();
+
+                        // Skip empty/background cells (>90% same color)
+                        let pixels: Vec<_> = cell.pixels().collect();
+                        let first = pixels[0];
+                        let same_count = pixels.iter().filter(|p| {
+                            (p[0] as i16 - first[0] as i16).abs() < 20 &&
+                            (p[1] as i16 - first[1] as i16).abs() < 20 &&
+                            (p[2] as i16 - first[2] as i16).abs() < 20
+                        }).count();
+                        if same_count as f32 / pixels.len() as f32 > 0.90 { continue; }
+
+                        // Remove black/green background → transparency
+                        let mut cleaned = image::RgbaImage::new(cell_size, cell_size);
+                        for (x, y, px) in cell.enumerate_pixels() {
+                            let is_black = px[0] < 15 && px[1] < 15 && px[2] < 15;
+                            let is_green = px[1] > 200 && px[0] < 50 && px[2] < 50; // chroma key
+                            if is_black || is_green {
+                                cleaned.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+                            } else {
+                                cleaned.put_pixel(x, y, *px);
+                            }
+                        }
+
+                        // Downscale to 32x32 if needed
+                        let final_sprite = if cell_size != 32 {
+                            image::imageops::resize(&cleaned, 32, 32, image::imageops::FilterType::Nearest)
+                        } else {
+                            cleaned
+                        };
+
+                        // Skip if too few opaque pixels after cleanup
+                        let opaque = final_sprite.pixels().filter(|p| p[3] > 10).count();
+                        if opaque < 50 { continue; }
+
+                        let existing = *class_counts.get(&class_name).unwrap_or(&0);
+                        let out_path = class_dir.join(format!("gemini_{class_name}_{:05}.png", existing));
+                        final_sprite.save(&out_path)?;
+                        *class_counts.entry(class_name.clone()).or_insert(0) += 1;
+                        file_count += 1;
+                    }
+                }
+                if file_count > 0 {
+                    println!("{fname}: {file_count} sprites → {class_name}");
+                }
+                total += file_count;
+            }
+
+            println!("\ntotal: {total} sprites ingested");
+            for (cls, cnt) in class_counts.iter() {
+                println!("  {cls}: {cnt}");
             }
         }
         Cmd::Relight { image, output, split } => {
