@@ -86,8 +86,11 @@ pub fn train_experts(
 
             let t = Tensor::new(vec![noise_level; bs].as_slice(), &device)?;
 
+            // Build conditioning tensors from labels (use super_id=label, null tags for legacy compat)
+            let tags_batch = Tensor::zeros((bs, crate::class_cond::NUM_TAGS), DType::F32, &device)?;
+
             // Encode with frozen base (no grad through base)
-            let (features, skips, t_emb) = base.encode(&x_noisy, &t, &y_batch)?;
+            let (features, skips, t_emb) = base.encode(&x_noisy, &t, &y_batch, &tags_batch)?;
             let features = features.detach();
             let skips: Vec<Tensor> = skips.iter().map(|s| s.detach()).collect();
             let t_emb = t_emb.detach();

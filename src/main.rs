@@ -6,6 +6,32 @@
 use pixel_forge::*;
 use clap::{Parser, Subcommand};
 
+const BASE_CLASSES: &[&str] = &[
+    "character", "weapon", "potion", "terrain", "enemy",
+    "tree", "building", "animal", "effect", "food",
+    "armor", "tool", "vehicle", "ui", "misc",
+];
+
+/// Discover class dirs: known classes + any extra dirs found on disk (skip _ and . prefixed).
+fn discover_classes(data_path: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = BASE_CLASSES.iter().map(|s| s.to_string()).collect();
+    if let Ok(entries) = std::fs::read_dir(data_path) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('_') || name.starts_with('.') { continue; }
+            if entry.path().is_dir() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// Class list when no data dir is available — base classes only.
+fn base_classes() -> Vec<String> {
+    BASE_CLASSES.iter().map(|s| s.to_string()).collect()
+}
+
 #[derive(Parser)]
 #[command(name = "pixel-forge", about = "Pixel art game asset generator")]
 struct Cli {
@@ -597,24 +623,17 @@ fn main() -> anyhow::Result<()> {
             curate::curate(&raw, &output, size)?;
         }
         Cmd::StageCascade { class, sil_model, detail_model, count, sil_steps, detail_steps, palette: palette_name, output, four_dir, real_struct } => {
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-            let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
-                .unwrap_or(14) as u32;
+            let cond = class_cond::lookup(&class.to_lowercase());
 
             let pal = palette::load_palette(&palette_name)?;
             let raw_images = if let Some(ref struct_dir) = real_struct {
                 // Bypass silhouette generation — use real structure maps
                 moe::detail_only_sample(
-                    &detail_model, struct_dir, &class, class_id, 32, count, detail_steps,
+                    &detail_model, struct_dir, &class, &cond, 32, count, detail_steps,
                 )?
             } else {
                 moe::stage_cascade_sample(
-                    &sil_model, &detail_model, class_id, 32, count, sil_steps, detail_steps,
+                    &sil_model, &detail_model, &cond, 32, count, sil_steps, detail_steps,
                 )?
             };
 
@@ -768,13 +787,8 @@ fn main() -> anyhow::Result<()> {
             train::compute_skeletons(&data, img_size)?;
         }
         Cmd::PrepStages { data, palette_colors } => {
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-
             let data_path = std::path::Path::new(&data);
+            let class_names = discover_classes(data_path);
             let struct_base = data_path.join("_structure");  // RGBA: SDF, nx, ny, outline
             let lum_base = data_path.join("_luminance");     // Grayscale: light/shadow
             let sil_base = data_path.join("_silhouettes");   // Binary mask
@@ -991,22 +1005,15 @@ fn main() -> anyhow::Result<()> {
             seed,
             four_dir,
         } => {
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-            let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
-                .unwrap_or(14) as u32; // default to misc
+            let cond = class_cond::lookup(&class.to_lowercase());
 
-            println!("generating {count}x {size}x{size} class={class} (id={class_id})");
+            println!("generating {count}x {size}x{size} class={class} (super={})", cond.super_id);
 
             let pal = palette::load_palette(&palette_name)?;
             let raw_images = if medium {
-                train::sample_medium_seeded(&model, class_id, size, count, steps, seed)?
+                train::sample_medium_seeded(&model, &cond, size, count, steps, seed)?
             } else {
-                train::sample_seeded(&model, class_id, size, count, steps, seed)?
+                train::sample_seeded(&model, &cond, size, count, steps, seed)?
             };
 
             let processed: Vec<image::RgbaImage> = raw_images
@@ -1054,13 +1061,9 @@ fn main() -> anyhow::Result<()> {
                 _ => anyhow::bail!("verdict must be 'good' or 'bad', got '{verdict}'"),
             };
 
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
+            let class_names = discover_classes(std::path::Path::new("data_v2_32"));
             let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
+                .position(|n| n == &class.to_lowercase())
                 .unwrap_or(14) as u32;
 
             // Load sprite pixels (channel-first f32)
@@ -1208,14 +1211,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::TrainLora { model, judge: judge_path, output, class } => {
             let device = pipeline::best_device();
 
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-            let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
-                .unwrap_or(14) as u32;
+            let cond = class_cond::lookup(&class.to_lowercase());
 
             // Load base Generator
             let mut base_varmap = candle_nn::VarMap::new();
@@ -1238,9 +1234,8 @@ fn main() -> anyhow::Result<()> {
                 println!("loaded existing lora: {}", output);
             }
 
-            let class_ids = vec![class_id; 8];
             let loss = lora::train_lora_step(
-                &base_varmap, &lora_varmap, &lora_set, &judge_model, &device, 8, &class_ids,
+                &base_varmap, &lora_varmap, &lora_set, &judge_model, &device, 8, &cond,
             )?;
             println!("lora training: avg_loss={:.4}", loss);
 
@@ -1265,11 +1260,13 @@ fn main() -> anyhow::Result<()> {
             // 1. GENERATE — produce candidates per class
             println!("step 1: generating sprite candidates...");
             let mut all_sprites: Vec<(u32, Vec<f32>, image::RgbaImage)> = Vec::new();
-            let classes_to_gen: Vec<u32> = vec![0, 3, 4, 5]; // character, terrain, enemy, tree
+            let classes_to_gen = ["character", "terrain", "enemy", "tree"];
             let count_per_class = 5u32;
 
-            for &cid in &classes_to_gen {
-                let raw_images = train::sample(&model, cid, 16, count_per_class, 40)?;
+            for &class_name in &classes_to_gen {
+                let cond = class_cond::lookup(class_name);
+                let cid = cond.super_id;
+                let raw_images = train::sample(&model, &cond, 16, count_per_class, 40)?;
                 for img in raw_images {
                     let snapped = grid::snap_to_grid(&img, 16);
                     let quantized = palette::quantize(&snapped, &pal);
@@ -1301,7 +1298,7 @@ fn main() -> anyhow::Result<()> {
                     judge_model.score_one(pixels, &device).unwrap_or(0.0) > 0.5
                 }).collect();
                 println!("  accepted {}/{} sprites", accepted.len(),
-                    classes_to_gen.len() as u32 * count_per_class);
+                    classes_to_gen.len() * count_per_class as usize);
             } else {
                 println!("step 2: no judge model, accepting all sprites");
                 accepted = all_sprites;
@@ -1345,17 +1342,9 @@ fn main() -> anyhow::Result<()> {
             let pal = palette::load_palette(&palette_name)?;
             println!("auto-detect: picking best model for this device...");
 
+            let cond = class_cond::lookup(&class.to_lowercase());
             let raw_images = device_cap::auto_sample(
-                {
-                    let class_names = [
-                        "character", "weapon", "potion", "terrain", "enemy",
-                        "tree", "building", "animal", "effect", "food",
-                        "armor", "tool", "vehicle", "ui", "misc",
-                    ];
-                    class_names.iter()
-                        .position(|&n| n == class.to_lowercase())
-                        .unwrap_or(14) as u32
-                },
+                &cond,
                 size,
                 count,
                 steps,
@@ -1445,14 +1434,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::Forge { class, count, steps, threshold, max_attempts, disc, palette: palette_name, output, lat, lon, cascade: use_cascade } => {
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-            let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
-                .unwrap_or(14) as u32;
+            let cond = class_cond::lookup(&class.to_lowercase());
 
             let pal = palette::load_palette(&palette_name)?;
             let signing_key = poa::load_or_create_keypair()?;
@@ -1466,13 +1448,13 @@ fn main() -> anyhow::Result<()> {
                     "pixel-forge-quench.safetensors",
                     "pixel-forge-cinder.safetensors",
                     Some("experts.safetensors"),
-                    &disc, class_id, 32, count, &config, threshold, max_attempts,
+                    &disc, &cond, 32, count, &config, threshold, max_attempts,
                 )?
             } else {
                 let device = pipeline::best_device();
                 let tier = device_cap::best_available();
                 discriminator::generate_with_gate(
-                    tier, class_id, count, steps, threshold, max_attempts, &disc, &device,
+                    tier, &cond, count, steps, threshold, max_attempts, &disc, &device,
                 )?
             };
 
@@ -1485,7 +1467,7 @@ fn main() -> anyhow::Result<()> {
             for sprite in sprites {
                 let (_dvm, disc_model) = discriminator::load(&disc, &device)?;
                 let (_, score) = discriminator::quality_gate(&disc_model, &sprite, 0.0, &device)?;
-                let packet = poa::sign_artifact(&sprite, class_id, score, lat, lon, &signing_key);
+                let packet = poa::sign_artifact(&sprite, cond.super_id, score, lat, lon, &signing_key);
                 assert!(packet.verify(), "PoA self-verification failed");
                 println!("  {}", packet.summary());
                 let wire = packet.to_bytes();
@@ -1505,14 +1487,7 @@ fn main() -> anyhow::Result<()> {
             println!("saved: {output} ({} sprites, {} PoA packets)", sprite_count, packet_count);
         }
         Cmd::Sign { image, class, score, disc, lat, lon } => {
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-            let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
-                .unwrap_or(14) as u32;
+            let cond = class_cond::lookup(&class.to_lowercase());
 
             let img = image::open(&image)?.to_rgba8();
             let signing_key = poa::load_or_create_keypair()?;
@@ -1527,7 +1502,7 @@ fn main() -> anyhow::Result<()> {
                 s
             };
 
-            let packet = poa::sign_artifact(&img, class_id, quality, lat, lon, &signing_key);
+            let packet = poa::sign_artifact(&img, cond.super_id, quality, lat, lon, &signing_key);
             let wire = packet.to_bytes();
             println!("{}", packet.summary());
             println!("verified: {}", packet.verify());
@@ -1566,14 +1541,7 @@ fn main() -> anyhow::Result<()> {
             println!("done: {out}");
         }
         Cmd::Cascade { class, quench, cinder, experts, count, quench_steps, cinder_steps, palette: palette_name, output } => {
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-            let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
-                .unwrap_or(14) as u32;
+            let cond = class_cond::lookup(&class.to_lowercase());
 
             let pal = palette::load_palette(&palette_name)?;
             let experts_path = if std::path::Path::new(&experts).exists() {
@@ -1587,7 +1555,7 @@ fn main() -> anyhow::Result<()> {
                 cinder_steps,
             };
 
-            let raw_images = moe::cascade_sample(&quench, &cinder, experts_path, class_id, 32, count, &config)?;
+            let raw_images = moe::cascade_sample(&quench, &cinder, experts_path, &cond, 32, count, &config)?;
 
             let processed: Vec<image::RgbaImage> = raw_images
                 .into_iter()
@@ -1647,17 +1615,10 @@ fn main() -> anyhow::Result<()> {
             println!("total: {total} tiles upscaled to 32x32");
         }
         Cmd::Anvil { class, anvil, count, steps, palette: palette_name, output } => {
-            let class_names = [
-                "character", "weapon", "potion", "terrain", "enemy",
-                "tree", "building", "animal", "effect", "food",
-                "armor", "tool", "vehicle", "ui", "misc",
-            ];
-            let class_id = class_names.iter()
-                .position(|&n| n == class.to_lowercase())
-                .unwrap_or(14) as u32;
+            let cond = class_cond::lookup(&class.to_lowercase());
 
             let pal = palette::load_palette(&palette_name)?;
-            let raw_images = moe::anvil_sample(&anvil, class_id, 32, count, steps)?;
+            let raw_images = moe::anvil_sample(&anvil, &cond, 32, count, steps)?;
 
             let processed: Vec<image::RgbaImage> = raw_images
                 .into_iter()

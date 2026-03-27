@@ -321,10 +321,10 @@ pub fn cluster_generate(
 
 /// Generate locally using auto_sample.
 fn generate_local(class: &str, count: u32, steps: usize, palette: &str) -> Result<Vec<Vec<u8>>> {
-    let class_id = class_name_to_id(class);
+    let cond = crate::class_cond::lookup(class);
     let pal = crate::palette::load_palette(palette)?;
 
-    let raw_images = crate::device_cap::auto_sample(class_id, 32, count, steps)?;
+    let raw_images = crate::device_cap::auto_sample(&cond, 32, count, steps)?;
 
     let mut pngs = Vec::new();
     for img in raw_images {
@@ -555,13 +555,3 @@ pub fn sync_models_all() -> Result<()> {
     Ok(())
 }
 
-fn class_name_to_id(class: &str) -> u32 {
-    let names = [
-        "character", "weapon", "potion", "terrain", "enemy",
-        "tree", "building", "animal", "effect", "food",
-        "armor", "tool", "vehicle", "ui", "misc",
-    ];
-    names.iter()
-        .position(|&n| n == class.to_lowercase())
-        .unwrap_or(14) as u32
-}

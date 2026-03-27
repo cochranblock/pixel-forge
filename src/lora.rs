@@ -226,7 +226,7 @@ pub fn train_lora_step(
     judge: &crate::judge::MicroClassifier,
     device: &Device,
     num_sprites: usize,
-    class_ids: &[u32],
+    cond: &crate::class_cond::ClassCond,
 ) -> Result<f32> {
     // Collect LoRA variables for the optimizer
     let lora_vars = lora_varmap.all_vars();
@@ -249,7 +249,9 @@ pub fn train_lora_step(
 
         // Denoise with base + LoRA (last BACKPROP_STEPS only for gradient)
         let total_steps = 40usize;
-        let class_tensor = Tensor::new(&class_ids[..bs], device)?;
+        let super_tensor = Tensor::new(&vec![cond.super_id; bs][..], device)?;
+        let tags_flat: Vec<f32> = (0..bs).flat_map(|_| cond.tags.iter().copied()).collect();
+        let tags_tensor = Tensor::new(tags_flat.as_slice(), device)?.reshape((bs, crate::class_cond::NUM_TAGS))?;
 
         // First N-BACKPROP_STEPS steps: no gradient (detach)
         for step in 0..(total_steps - BACKPROP_STEPS) {
@@ -258,7 +260,7 @@ pub fn train_lora_step(
             // Use base model forward (LoRA deltas applied internally)
             let base_vb = VarBuilder::from_varmap(base_varmap, DType::F32, device);
             let model = crate::tiny_unet::TinyUNet::new(base_vb)?;
-            let pred = model.forward(&x, &t, &class_tensor)?;
+            let pred = model.forward(&x, &t, &super_tensor, &tags_tensor)?;
             let mix = 1.0 / (total_steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix))?;
             x = x.detach(); // no gradient through early steps
@@ -270,7 +272,7 @@ pub fn train_lora_step(
             let t = Tensor::new(vec![noise_level; bs].as_slice(), device)?;
             let base_vb = VarBuilder::from_varmap(base_varmap, DType::F32, device);
             let model = crate::tiny_unet::TinyUNet::new(base_vb)?;
-            let pred = model.forward(&x, &t, &class_tensor)?;
+            let pred = model.forward(&x, &t, &super_tensor, &tags_tensor)?;
             let mix = 1.0 / (total_steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix))?;
         }

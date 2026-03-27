@@ -181,7 +181,7 @@ impl PixelForgeApp {
         }
 
         std::thread::spawn(move || {
-            let class_id = class_name_to_id(&class_name);
+            let cond = crate::class_cond::lookup(&class_name);
             let result: anyhow::Result<GenResult> = if let Some(ref cluster) = cluster_state {
                 cluster_generate_for_display(&class_name, count, steps, &palette_name, cluster)
                     .map(|(pixels, w, h, _)| GenResult {
@@ -194,18 +194,18 @@ impl PixelForgeApp {
                         let quench_path = device_cap::Tier::Quench.model_path();
                         let cinder_path = device_cap::Tier::Cinder.model_path();
                         if mode == GenMode::Cascade && quench_path.exists() && cinder_path.exists() {
-                            cascade_for_display(class_id, count, steps, &palette_name)
+                            cascade_for_display(&cond, count, steps, &palette_name)
                         } else if quench_path.exists() {
-                            generate_for_display(device_cap::Tier::Quench, class_id, count, steps, &palette_name)
+                            generate_for_display(device_cap::Tier::Quench, &cond, count, steps, &palette_name)
                         } else {
-                            generate_for_display(device_cap::Tier::Cinder, class_id, count, steps, &palette_name)
+                            generate_for_display(device_cap::Tier::Cinder, &cond, count, steps, &palette_name)
                         }
                     }
                     GenMode::Cinder => {
-                        generate_for_display(device_cap::Tier::Cinder, class_id, count, steps, &palette_name)
+                        generate_for_display(device_cap::Tier::Cinder, &cond, count, steps, &palette_name)
                     }
                     GenMode::Anvil => {
-                        anvil_for_display(class_id, count, steps, &palette_name)
+                        anvil_for_display(&cond, count, steps, &palette_name)
                     }
                 }
             };
@@ -219,7 +219,7 @@ impl PixelForgeApp {
                     s.result_width = result.width;
                     s.result_height = result.height;
                     s.individual_sprites = result.sprites_f32;
-                    s.sprite_class_ids = vec![class_id; count as usize];
+                    s.sprite_class_ids = vec![cond.super_id; count as usize];
                 }
                 Err(e) => {
                     s.status = format!("error: {e}");
@@ -747,7 +747,7 @@ fn rgba_to_f32(img: &image::RgbaImage) -> Vec<f32> {
 /// Generate sprites and return raw RGBA pixels for display.
 fn generate_for_display(
     tier: Tier,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     count: u32,
     steps: usize,
     palette_name: &str,
@@ -764,8 +764,8 @@ fn generate_for_display(
     };
 
     let raw_images = match actual_tier {
-        Tier::Cinder => crate::train::sample(&actual_file, class_id, img_size, count, steps)?,
-        Tier::Quench | Tier::Anvil => crate::train::sample_medium(&actual_file, class_id, img_size, count, steps)?,
+        Tier::Cinder => crate::train::sample(&actual_file, cond, img_size, count, steps)?,
+        Tier::Quench | Tier::Anvil => crate::train::sample_medium(&actual_file, cond, img_size, count, steps)?,
     };
 
     let processed: Vec<image::RgbaImage> = raw_images
@@ -788,7 +788,7 @@ fn generate_for_display(
 
 /// MoE cascade: Quench foundation → Cinder detail.
 fn cascade_for_display(
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     count: u32,
     steps: usize,
     palette_name: &str,
@@ -825,7 +825,7 @@ fn cascade_for_display(
         &quench_path.to_string_lossy(),
         &cinder_path.to_string_lossy(),
         experts_path.as_deref(),
-        class_id, img_size, count, &config,
+        cond, img_size, count, &config,
     )?;
 
     let processed: Vec<image::RgbaImage> = raw_images
@@ -848,7 +848,7 @@ fn cascade_for_display(
 
 /// Desktop pipeline: Anvil single-stage.
 fn anvil_for_display(
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     count: u32,
     steps: usize,
     palette_name: &str,
@@ -863,7 +863,7 @@ fn anvil_for_display(
 
     let raw_images = crate::moe::anvil_sample(
         &anvil_path.to_string_lossy(),
-        class_id, img_size, count, steps,
+        cond, img_size, count, steps,
     )?;
 
     let processed: Vec<image::RgbaImage> = raw_images
@@ -915,12 +915,6 @@ fn cluster_generate_for_display(
     let pixels = sheet.into_raw();
 
     Ok((pixels, w, h, 1))
-}
-
-fn class_name_to_id(class: &str) -> u32 {
-    CLASS_NAMES.iter()
-        .position(|&n| n == class.to_lowercase())
-        .unwrap_or(14) as u32
 }
 
 /// Launch the app. Called when no CLI args are given.

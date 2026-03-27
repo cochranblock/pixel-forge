@@ -132,7 +132,8 @@ fn generate_negatives(model_path: &str, count: usize, device: &Device) -> anyhow
     varmap.load(model_path)?;
 
     let mut all_pixels = Vec::new();
-    let class_t = Tensor::new(&[0u32], device)?;
+    let super_t = Tensor::new(&[0u32], device)?;
+    let tags_t = Tensor::zeros((1, crate::class_cond::NUM_TAGS), DType::F32, device)?;
 
     for _ in 0..count {
         // Generate with few steps — intentionally low quality
@@ -141,7 +142,7 @@ fn generate_negatives(model_path: &str, count: usize, device: &Device) -> anyhow
         for step in 0..steps {
             let noise_level = 1.0 - (step as f32 / steps as f32);
             let t = Tensor::new(&[noise_level], device)?;
-            let pred = model.forward(&x, &t, &class_t)?;
+            let pred = model.forward(&x, &t, &super_t, &tags_t)?;
             let mix = 1.0 / (steps - step) as f64;
             x = ((&x * (1.0 - mix))? + (&pred * mix)?)?;
         }
@@ -284,7 +285,7 @@ pub fn quality_gate(
 /// Returns only sprites that pass the discriminator threshold.
 pub fn generate_with_gate(
     _tier: crate::device_cap::Tier,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     count: u32,
     steps: usize,
     threshold: f32,
@@ -299,7 +300,7 @@ pub fn generate_with_gate(
 
     while (accepted.len() as u32) < count && attempts < max_attempts {
         let need = count - accepted.len() as u32;
-        let batch = crate::device_cap::auto_sample(class_id, 16, need, steps)?;
+        let batch = crate::device_cap::auto_sample(cond, 16, need, steps)?;
 
         for sprite in batch {
             let (pass, score) = quality_gate(&disc, &sprite, threshold, device)?;
