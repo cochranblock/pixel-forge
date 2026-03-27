@@ -231,6 +231,57 @@ pub fn super_name(id: u32) -> &'static str {
     }
 }
 
+/// All known class directory names, grouped by super-category.
+/// Returns (super_id, &[class_name]) for each super.
+pub fn classes_for_super(super_id: u32) -> &'static [&'static str] {
+    match super_id {
+        0 => &[
+            "character", "elf", "dwarf", "orc", "knight", "villager",
+            "goblin", "skeleton", "zombie", "fairy", "cyborg", "spacemarine",
+            "hero_warrior", "hero_mage", "hero_cleric", "hero_rogue",
+        ],
+        1 => &[
+            "animal", "farm_animal", "wild_animal", "bird", "fish", "insect",
+            "spider", "crab", "jellyfish", "bat", "bear", "cat_domestic",
+            "cat_fat", "cat_mech", "cat_space", "cat_warrior", "cat_wizard",
+            "dog", "horse", "wolf", "reptile", "slime",
+        ],
+        2 => &[
+            "enemy", "demon", "dragon", "ghost", "golem",
+            "mythical_beast", "dinosaur", "alien",
+        ],
+        3 => &[
+            "weapon", "sword", "axe_hammer", "bow_ranged", "gun",
+            "spear_polearm", "staff_wand", "lightsaber",
+        ],
+        4 => &[
+            "armor", "body_armor", "helmet", "shield",
+            "boots_gloves", "cloak", "key", "scroll_book",
+        ],
+        5 => &[
+            "potion", "food", "crop", "mushroom", "gem_treasure",
+        ],
+        6 => &[
+            "terrain", "terrain_scifi", "ground_natural", "floor",
+            "wall", "water_lava", "door_stair",
+        ],
+        7 => &[
+            "tree", "tree_conifer", "tree_deciduous", "tree_exotic", "bush_flower",
+        ],
+        8 => &[
+            "building", "building_scifi", "furniture_decor", "furniture_light",
+            "furniture_room", "furniture_scifi", "furniture_storage",
+            "vehicle", "vehicle_air", "vehicle_land", "vehicle_space",
+            "vehicle_water", "mech", "tool", "mount",
+        ],
+        9 => &[
+            "ui", "ui_frame", "ui_icon", "effect", "fx_ambient",
+            "fx_combat", "fx_elemental", "fx_scifi", "misc", "gemini",
+        ],
+        _ => &[],
+    }
+}
+
 /// Super-category display color (RGB) for scene visualization.
 pub fn super_color(id: u32) -> (u8, u8, u8) {
     match id {

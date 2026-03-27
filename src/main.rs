@@ -27,10 +27,6 @@ fn discover_classes(data_path: &std::path::Path) -> Vec<String> {
     names
 }
 
-/// Class list when no data dir is available — base classes only.
-fn base_classes() -> Vec<String> {
-    BASE_CLASSES.iter().map(|s| s.to_string()).collect()
-}
 
 #[derive(Parser)]
 #[command(name = "pixel-forge", about = "Pixel art game asset generator")]
@@ -786,7 +782,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Skeletons { data, img_size } => {
             train::compute_skeletons(&data, img_size)?;
         }
-        Cmd::PrepStages { data, palette_colors } => {
+        Cmd::PrepStages { data, palette_colors: _ } => {
             let data_path = std::path::Path::new(&data);
             let class_names = discover_classes(data_path);
             let struct_base = data_path.join("_structure");  // RGBA: SDF, nx, ny, outline

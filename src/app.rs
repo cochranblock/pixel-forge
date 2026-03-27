@@ -7,16 +7,11 @@
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
+use crate::class_cond;
 use crate::cluster::{self, ClusterState};
 use crate::device_cap::{self, DeviceProfile, Tier};
 use crate::palette;
 use crate::grid;
-
-const CLASS_NAMES: &[&str] = &[
-    "character", "weapon", "potion", "terrain", "enemy",
-    "tree", "building", "animal", "effect", "food",
-    "armor", "tool", "vehicle", "ui", "misc",
-];
 
 const PALETTE_NAMES: &[&str] = &[
     "stardew", "starbound", "snes", "nes", "gameboy", "pico8", "endesga",
@@ -69,7 +64,8 @@ pub struct PixelForgeApp {
     cluster: Arc<Mutex<Option<ClusterState>>>,
     cluster_probing: Arc<Mutex<bool>>,
     use_cluster: bool,
-    selected_class: usize,
+    selected_super: u32,
+    selected_class: String,
     selected_palette: usize,
     prompt_text: String,
     gen_mode: GenMode,
@@ -99,7 +95,8 @@ impl Default for PixelForgeApp {
             cluster: Arc::new(Mutex::new(None)),
             cluster_probing: Arc::new(Mutex::new(false)),
             use_cluster: true,
-            selected_class: 0, // character
+            selected_super: 0, // humanoid
+            selected_class: "character".to_string(),
             selected_palette: 0, // stardew
             prompt_text: String::new(),
             keyboard_requested: false,
@@ -158,7 +155,7 @@ impl PixelForgeApp {
     }
 
     fn start_generation(&mut self, ctx: &egui::Context) {
-        let class_name = CLASS_NAMES[self.selected_class].to_string();
+        let class_name = self.selected_class.clone();
         let palette_name = PALETTE_NAMES[self.selected_palette].to_string();
         let count = self.gen_count;
         let steps = self.gen_steps;
@@ -351,24 +348,52 @@ impl eframe::App for PixelForgeApp {
 
             ui.add_space(8.0);
 
-            // Class selector — card style
+            // Class selector — two-tier: super-categories then class dirs
             ui.group(|ui| {
                 ui.set_width(ui.available_width());
                 section_label(ui, "SPRITE CLASS");
-                egui::Grid::new("class_grid")
+
+                // Super-category row
+                egui::Grid::new("super_grid")
                     .num_columns(5)
                     .spacing([4.0, 4.0])
                     .show(ui, |ui| {
-                        for (i, name) in CLASS_NAMES.iter().enumerate() {
-                            let selected = self.selected_class == i;
-                            if styled_button(ui, name, selected, egui::vec2(62.0, 36.0)) {
-                                self.selected_class = i;
+                        for id in 0..class_cond::NUM_SUPER as u32 {
+                            let selected = self.selected_super == id;
+                            if styled_button(ui, class_cond::super_name(id), selected, egui::vec2(62.0, 32.0)) {
+                                self.selected_super = id;
+                                // Auto-select first class in this super
+                                let classes = class_cond::classes_for_super(id);
+                                if !classes.is_empty() {
+                                    self.selected_class = classes[0].to_string();
+                                }
                             }
-                            if (i + 1) % 5 == 0 {
+                            if (id + 1) % 5 == 0 {
                                 ui.end_row();
                             }
                         }
                     });
+
+                ui.add_space(4.0);
+
+                // Class dirs for selected super-category (scrollable)
+                let classes = class_cond::classes_for_super(self.selected_super);
+                egui::ScrollArea::horizontal().id_salt("class_scroll").show(ui, |ui| {
+                    egui::Grid::new("class_grid")
+                        .num_columns(5)
+                        .spacing([4.0, 4.0])
+                        .show(ui, |ui| {
+                            for (i, name) in classes.iter().enumerate() {
+                                let selected = self.selected_class == *name;
+                                if styled_button(ui, name, selected, egui::vec2(72.0, 30.0)) {
+                                    self.selected_class = name.to_string();
+                                }
+                                if (i + 1) % 5 == 0 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                });
             });
 
             ui.add_space(8.0);

@@ -17,10 +17,19 @@ android {
         }
     }
 
+    signingConfigs {
+        release {
+            storeFile file("../upload-keystore.jks")
+            storePassword System.getenv("KEYSTORE_PASSWORD")
+            keyAlias "upload-key"
+            keyPassword System.getenv("KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug // use debug for now, swap to release keystore later
+            signingConfig signingConfigs.release
         }
         debug {
             minifyEnabled false
