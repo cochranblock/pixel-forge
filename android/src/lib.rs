@@ -4,10 +4,8 @@
 
 use android_activity::AndroidApp;
 
-/// Bundled Cinder model (TinyUNet, 4.2 MB).
+/// Bundled Cinder model (TinyUNet, ~4.2 MB). Cinder-only for mobile — keeps APK under 10 MB.
 const CINDER_MODEL: &[u8] = include_bytes!("../../pixel-forge-cinder.safetensors");
-/// Bundled Quench model (MediumUNet, 22 MB).
-const QUENCH_MODEL: &[u8] = include_bytes!("../../pixel-forge-quench.safetensors");
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -22,10 +20,9 @@ fn android_main(app: AndroidApp) {
     unsafe { std::env::set_var("HOME", &data_dir) };
     log::info!("HOME={}", data_dir.display());
 
-    // Extract bundled models — overwrite if size changed (new training run)
+    // Extract bundled Cinder model — overwrite if size changed (new training run)
     for (name, bytes) in [
         ("pixel-forge-cinder.safetensors", CINDER_MODEL),
-        ("pixel-forge-quench.safetensors", QUENCH_MODEL),
     ] {
         let dest = data_dir.join(name);
         let needs_write = match std::fs::metadata(&dest) {

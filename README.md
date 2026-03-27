@@ -14,7 +14,7 @@
 
 ---
 
-# Pixel Forge v0.5.0
+# Pixel Forge v0.6.0
 
 **Free pixel art generator. Three AI models. First MoE diffusion under 30MB. Pure Rust.**
 
