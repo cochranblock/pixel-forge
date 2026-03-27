@@ -27,7 +27,7 @@ pub fn train_experts(
     println!("loading frozen Quench from {quench_path}...");
     let mut base_vm = VarMap::new();
     let base_vb = VarBuilder::from_varmap(&base_vm, dtype, &device);
-    let base = MediumUNet::with_classes(base_vb, 15)?;
+    let base = MediumUNet::new(base_vb)?;
     base_vm.load(quench_path)?;
     println!("  Quench loaded (frozen)");
 
