@@ -277,16 +277,17 @@ fn bench_cinder(device: &Device) -> Result<f64> {
 
     let x = Tensor::rand(0f32, 1f32, (1, 3, 32, 32), device)?;
     let t = Tensor::new(&[0.5f32], device)?;
-    let c = Tensor::new(&[0u32], device)?;
+    let s = Tensor::new(&[0u32], device)?;
+    let tags = Tensor::zeros((1, crate::class_cond::NUM_TAGS), DType::F32, device)?;
 
     // Warm up
-    let _ = model.forward(&x, &t, &c)?;
+    let _ = model.forward(&x, &t, &s, &tags)?;
 
     // Time 3 passes, take median
     let mut times = Vec::new();
     for _ in 0..3 {
         let start = Instant::now();
-        let _ = model.forward(&x, &t, &c)?;
+        let _ = model.forward(&x, &t, &s, &tags)?;
         times.push(start.elapsed().as_secs_f64() * 1000.0);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -302,15 +303,16 @@ fn bench_quench(device: &Device) -> Result<f64> {
 
     let x = Tensor::rand(0f32, 1f32, (1, 3, 32, 32), device)?;
     let t = Tensor::new(&[0.5f32], device)?;
-    let c = Tensor::new(&[0u32], device)?;
+    let s = Tensor::new(&[0u32], device)?;
+    let tags = Tensor::zeros((1, crate::class_cond::NUM_TAGS), DType::F32, device)?;
 
     // Warm up
-    let _ = model.forward(&x, &t, &c)?;
+    let _ = model.forward(&x, &t, &s, &tags)?;
 
     let mut times = Vec::new();
     for _ in 0..3 {
         let start = Instant::now();
-        let _ = model.forward(&x, &t, &c)?;
+        let _ = model.forward(&x, &t, &s, &tags)?;
         times.push(start.elapsed().as_secs_f64() * 1000.0);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -428,7 +430,7 @@ pub fn reprobe() -> Result<DeviceProfile> {
 /// Sample using the auto-selected tier.
 /// Single entry point — caller doesn't need to know which model.
 pub fn auto_sample(
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
@@ -437,10 +439,10 @@ pub fn auto_sample(
     if !profile.tier.model_path().exists() {
         let fallback = best_available_tier();
         println!("  {} not found, falling back to {}", profile.tier, fallback);
-        return sample_tier(fallback, class_id, img_size, count, steps);
+        return sample_tier(fallback, cond, img_size, count, steps);
     }
 
-    sample_tier(profile.tier, class_id, img_size, count, steps)
+    sample_tier(profile.tier, cond, img_size, count, steps)
 }
 
 /// Find the best model tier that actually has a file on disk.
@@ -460,16 +462,16 @@ fn best_available_tier() -> Tier {
 /// Sample with a specific tier.
 fn sample_tier(
     tier: Tier,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
 ) -> Result<Vec<image::RgbaImage>> {
     match tier {
-        Tier::Cinder => crate::train::sample(&tier.model_path().to_string_lossy(), class_id, img_size, count, steps),
-        Tier::Quench => crate::train::sample_medium(&tier.model_path().to_string_lossy(), class_id, img_size, count, steps),
+        Tier::Cinder => crate::train::sample(&tier.model_path().to_string_lossy(), cond, img_size, count, steps),
+        Tier::Quench => crate::train::sample_medium(&tier.model_path().to_string_lossy(), cond, img_size, count, steps),
         Tier::Anvil => {
-            crate::train::sample_anvil(&tier.model_path().to_string_lossy(), class_id, img_size, count, steps)
+            crate::train::sample_anvil(&tier.model_path().to_string_lossy(), cond, img_size, count, steps)
         }
     }
 }

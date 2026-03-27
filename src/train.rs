@@ -31,10 +31,24 @@ fn detect_class_count(path: &str) -> Option<usize> {
     if data.len() < 8 { return None; }
     let header_len = u64::from_le_bytes(data[..8].try_into().ok()?) as usize;
     let header_str = std::str::from_utf8(data.get(8..8 + header_len)?).ok()?;
-    // Parse just enough to find class_emb.weight shape
     let header: serde_json::Value = serde_json::from_str(header_str).ok()?;
     let shape = header.get("class_emb.weight")?.get("shape")?.as_array()?;
     shape.first()?.as_u64().map(|n| n as usize)
+}
+
+/// Detect model version: 2 = hybrid (super_emb + tag_proj), 1 = legacy (class_emb).
+pub fn detect_model_version(path: &str) -> u8 {
+    let data = match std::fs::read(path) { Ok(d) => d, Err(_) => return 1 };
+    if data.len() < 8 { return 1; }
+    let header_len = match u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8])) {
+        0 => return 1,
+        n => n as usize,
+    };
+    let header_str = match std::str::from_utf8(data.get(8..8 + header_len).unwrap_or(&[])) {
+        Ok(s) => s,
+        Err(_) => return 1,
+    };
+    if header_str.contains("super_emb.weight") { 2 } else { 1 }
 }
 
 /// Training config.
@@ -182,29 +196,29 @@ impl EmaWeights {
 
 /// Unconditional class ID for CFG — index 15 is the "null" class.
 /// Model sees this during training when class is dropped.
-/// Embedding table is 16 entries: 0-14 = real classes, 15 = unconditional.
+/// Legacy CFG null class — kept for old model compat.
 pub const CFG_NULL_CLASS: u32 = 15;
 
-/// Trait to unify TinyUNet and MediumUNet forward passes.
+/// Trait to unify UNet forward passes with hybrid conditioning.
 pub trait DiffusionModel {
-    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor>;
+    fn forward(&self, x: &Tensor, timestep: &Tensor, super_id: &Tensor, tags: &Tensor) -> candle_core::Result<Tensor>;
 }
 
 impl DiffusionModel for TinyUNet {
-    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor> {
-        TinyUNet::forward(self, x, timestep, class_id)
+    fn forward(&self, x: &Tensor, timestep: &Tensor, super_id: &Tensor, tags: &Tensor) -> candle_core::Result<Tensor> {
+        TinyUNet::forward(self, x, timestep, super_id, tags)
     }
 }
 
 impl DiffusionModel for MediumUNet {
-    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor> {
-        MediumUNet::forward(self, x, timestep, class_id)
+    fn forward(&self, x: &Tensor, timestep: &Tensor, super_id: &Tensor, tags: &Tensor) -> candle_core::Result<Tensor> {
+        MediumUNet::forward(self, x, timestep, super_id, tags)
     }
 }
 
 impl DiffusionModel for AnvilUNet {
-    fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> candle_core::Result<Tensor> {
-        AnvilUNet::forward(self, x, timestep, class_id)
+    fn forward(&self, x: &Tensor, timestep: &Tensor, super_id: &Tensor, tags: &Tensor) -> candle_core::Result<Tensor> {
+        AnvilUNet::forward(self, x, timestep, super_id, tags)
     }
 }
 
@@ -212,13 +226,25 @@ impl DiffusionModel for AnvilUNet {
 /// bincode+zstd serialized for instant reload.
 #[derive(Serialize, Deserialize)]
 pub struct PackedDataset {
+    /// Format version: 1 = legacy (labels), 2 = hybrid (super_ids + tags)
+    #[serde(default = "default_version")]
+    pub version: u8,
     pub img_size: u32,
     /// Flat f32 pixels: [sample0_r, sample0_g, sample0_b, sample1_r, ...] channel-first per sample
     pub pixels: Vec<f32>,
+    /// Legacy class labels (v1). Empty in v2.
     pub labels: Vec<u32>,
+    /// Super-category IDs (v2).
+    #[serde(default)]
+    pub super_ids: Vec<u32>,
+    /// Binary trait tags per sample (v2). Each inner vec is [f32; 12] flattened.
+    #[serde(default)]
+    pub tags: Vec<[f32; 12]>,
     /// Number of f32 values per sample (3 * img_size * img_size)
     pub stride: usize,
 }
+
+fn default_version() -> u8 { 1 }
 
 /// Preprocess: decode all PNGs → RAM → bincode+zstd file.
 /// Called once. Subsequent runs load the cached blob.
@@ -243,25 +269,40 @@ pub fn preprocess(data_dir: &str, img_size: u32) -> Result<PackedDataset> {
     println!("preprocessing PNGs from {data_dir} → {cache_file}...");
     let t0 = std::time::Instant::now();
 
-    let class_names = [
-        "character", "weapon", "potion", "terrain", "enemy",
-        "tree", "building", "animal", "effect", "food",
-        "armor", "tool", "vehicle", "ui", "misc",
-    ];
+    let data_p = Path::new(data_dir);
+    let class_names = {
+        let mut names: Vec<String> = vec![
+            "character", "weapon", "potion", "terrain", "enemy",
+            "tree", "building", "animal", "effect", "food",
+            "armor", "tool", "vehicle", "ui", "misc",
+        ].into_iter().map(|s| s.to_string()).collect();
+        if let Ok(entries) = std::fs::read_dir(data_p) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('_') || name.starts_with('.') { continue; }
+                if entry.path().is_dir() && !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    };
 
     let stride = (3 * img_size * img_size) as usize;
     let mut pixels: Vec<f32> = Vec::new();
     let mut labels: Vec<u32> = Vec::new();
+    let mut super_ids: Vec<u32> = Vec::new();
+    let mut tags_vec: Vec<[f32; 12]> = Vec::new();
     let mut total = 0usize;
     let mut bad = 0usize;
 
-    let data_path = Path::new(data_dir);
-
     for (class_id, name) in class_names.iter().enumerate() {
-        let class_dir = data_path.join(name);
+        let class_dir = data_p.join(name);
         if !class_dir.is_dir() {
             continue;
         }
+
+        let cond = crate::class_cond::lookup(name);
 
         let mut entries: Vec<_> = std::fs::read_dir(&class_dir)?
             .filter_map(|e| e.ok())
@@ -280,6 +321,8 @@ pub fn preprocess(data_dir: &str, img_size: u32) -> Result<PackedDataset> {
                 Some(px) => {
                     pixels.extend_from_slice(&px);
                     labels.push(class_id as u32);
+                    super_ids.push(cond.super_id);
+                    tags_vec.push(cond.tags);
                     class_count += 1;
                     total += 1;
                 }
@@ -295,7 +338,7 @@ pub fn preprocess(data_dir: &str, img_size: u32) -> Result<PackedDataset> {
         anyhow::bail!("no images found in {data_dir}");
     }
 
-    let dataset = PackedDataset { img_size, pixels, labels, stride };
+    let dataset = PackedDataset { version: 2, img_size, pixels, labels, super_ids, tags: tags_vec, stride };
 
     // Serialize + compress
     let encoded = bincode::serialize(&dataset)?;
@@ -521,7 +564,9 @@ fn train_inner(
             let bs = end - start;
 
             let mut batch_px = Vec::with_capacity(bs * stride);
-            let mut batch_labels = Vec::with_capacity(bs);
+            let mut batch_labels: Vec<u32> = Vec::with_capacity(bs);
+            let mut batch_super: Vec<u32> = Vec::with_capacity(bs);
+            let mut batch_tags: Vec<f32> = Vec::with_capacity(bs * crate::class_cond::NUM_TAGS);
 
             for &idx in &indices[start..end] {
                 let src_start = idx * stride;
@@ -536,17 +581,23 @@ fn train_inner(
 
                 batch_px.extend_from_slice(&sample);
 
-                // CFG: randomly drop class label to train unconditional path
+                // CFG: randomly drop conditioning to train unconditional path
                 if config.cfg_dropout > 0.0 && rng.r#gen_bool(config.cfg_dropout) {
-                    batch_labels.push(CFG_NULL_CLASS);
+                    batch_labels.push(crate::class_cond::CFG_NULL_SUPER);
+                    batch_super.push(crate::class_cond::CFG_NULL_SUPER);
+                    batch_tags.extend_from_slice(&crate::class_cond::CFG_NULL_TAGS);
                 } else {
-                    batch_labels.push(dataset.labels[idx]);
+                    batch_labels.push(dataset.labels.get(idx).copied().unwrap_or(0));
+                    batch_super.push(dataset.super_ids[idx]);
+                    batch_tags.extend_from_slice(&dataset.tags[idx]);
                 }
             }
 
             let x_batch = Tensor::new(batch_px.as_slice(), device)?
                 .reshape((bs, 3, sz, sz))?;
-            let y_batch = Tensor::new(batch_labels.as_slice(), device)?;
+            let super_batch = Tensor::new(batch_super.as_slice(), device)?;
+            let tags_batch = Tensor::new(batch_tags.as_slice(), device)?
+                .reshape((bs, crate::class_cond::NUM_TAGS))?;
 
             // Noise schedule: cosine or linear
             let noise_raw = Tensor::rand(0f32, 1f32, (bs,), device)?;
@@ -577,7 +628,7 @@ fn train_inner(
                 noisy_x.clone()
             };
 
-            let pred = model.forward(&model_input, &noise_amount, &y_batch)?;
+            let pred = model.forward(&model_input, &noise_amount, &super_batch, &tags_batch)?;
 
             // V-prediction: target = noise - clean (direction from clean to noise)
             // Clean-prediction: target = clean image
@@ -727,15 +778,17 @@ pub fn cfg_denoise(
     model: &dyn DiffusionModel,
     x: &Tensor,
     t: &Tensor,
-    class_tensor: &Tensor,
-    null_class: &Tensor,
+    super_id: &Tensor,
+    tags: &Tensor,
+    null_super: &Tensor,
+    null_tags: &Tensor,
     cfg_scale: f64,
 ) -> candle_core::Result<Tensor> {
     if cfg_scale <= 1.0 {
-        return model.forward(x, t, class_tensor);
+        return model.forward(x, t, super_id, tags);
     }
-    let cond = model.forward(x, t, class_tensor)?;
-    let uncond = model.forward(x, t, null_class)?;
+    let cond = model.forward(x, t, super_id, tags)?;
+    let uncond = model.forward(x, t, null_super, null_tags)?;
     let diff = (&cond - &uncond)?;
     &uncond + (diff * cfg_scale)?
 }
@@ -747,18 +800,20 @@ pub fn cfg_denoise_vpred(
     x: &Tensor,
     t: &Tensor,
     amount: f32,
-    class_tensor: &Tensor,
-    null_class: &Tensor,
+    super_id: &Tensor,
+    tags: &Tensor,
+    null_super: &Tensor,
+    null_tags: &Tensor,
     cfg_scale: f64,
 ) -> candle_core::Result<Tensor> {
-    let cond_v = model.forward(x, t, class_tensor)?;
+    let cond_v = model.forward(x, t, super_id, tags)?;
     let cond_clean = (x - (&cond_v * amount as f64)?)?;
 
     if cfg_scale <= 1.0 {
         return Ok(cond_clean);
     }
 
-    let uncond_v = model.forward(x, t, null_class)?;
+    let uncond_v = model.forward(x, t, null_super, null_tags)?;
     let uncond_clean = (x - (&uncond_v * amount as f64)?)?;
 
     // CFG on clean predictions, not on raw velocity
@@ -875,23 +930,35 @@ fn tensor_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
     Ok(rgba)
 }
 
+/// Build conditioning tensors for batched generation.
+pub fn cond_tensors(cond: &crate::class_cond::ClassCond, n: usize, device: &Device) -> candle_core::Result<(Tensor, Tensor, Tensor, Tensor)> {
+    let super_tensor = Tensor::new(&vec![cond.super_id; n][..], device)?;
+    let tags_flat: Vec<f32> = (0..n).flat_map(|_| cond.tags.iter().copied()).collect();
+    let tags_tensor = Tensor::new(tags_flat.as_slice(), device)?.reshape((n, crate::class_cond::NUM_TAGS))?;
+    let null_cond = crate::class_cond::ClassCond::null();
+    let null_super = Tensor::new(&vec![null_cond.super_id; n][..], device)?;
+    let null_tags_flat: Vec<f32> = (0..n).flat_map(|_| null_cond.tags.iter().copied()).collect();
+    let null_tags = Tensor::new(null_tags_flat.as_slice(), device)?.reshape((n, crate::class_cond::NUM_TAGS))?;
+    Ok((super_tensor, tags_tensor, null_super, null_tags))
+}
+
 /// Sample from a trained TinyUNet (Cinder) with CFG.
 /// Loads f16 weights as f32 transparently — f16 is storage-only.
 /// Optional seed for deterministic generation (same seed = same sprite).
 pub fn sample(
     model_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
-    sample_seeded(model_path, class_id, img_size, count, steps, None)
+    sample_seeded(model_path, cond, img_size, count, steps, None)
 }
 
 /// Seeded sample — deterministic when seed is Some.
 pub fn sample_seeded(
     model_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
@@ -899,27 +966,30 @@ pub fn sample_seeded(
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
+    let version = detect_model_version(model_path);
 
     println!("loading model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
-    let n_classes = detect_class_count(model_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
-    let has_null_class = n_classes > 15;
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model = TinyUNet::with_classes(vb, n_classes)?;
+    let model: Box<dyn DiffusionModel> = if version == 2 {
+        Box::new(TinyUNet::with_hybrid(vb, 3)?)
+    } else {
+        let n_classes = detect_class_count(model_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
+        Box::new(TinyUNet::with_classes(vb, n_classes)?)
+    };
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
-    let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
+    let cfg_scale = DEFAULT_CFG_SCALE;
     let params = TinyUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
     println!("model: {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);
 
-    let cid_val = class_id.min((n_classes - 1) as u32);
-    let null_val = if has_null_class { CFG_NULL_CLASS } else { 0u32 };
-    let class_tensor = Tensor::new(&vec![cid_val; count as usize][..], &device)?;
-    let null_class = Tensor::new(&vec![null_val; count as usize][..], &device)?;
+    let n = count as usize;
+    let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
 
     // Try loading skeleton for this class
+    let class_id = cond.super_id; // use super_id for skeleton lookup
     let skeleton = load_skeleton("data", class_id, img_size, &device)
         .or_else(|| load_skeleton("data_v2_32", class_id, img_size, &device));
     let use_skeleton = skeleton.is_some();
@@ -958,9 +1028,9 @@ pub fn sample_seeded(
 
         let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
         let pred_clean = if is_v_pred {
-            cfg_denoise_vpred(&model, &x, &t, amount, &class_tensor, &null_class, cfg_scale)?
+            cfg_denoise_vpred(model.as_ref(), &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         } else {
-            cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?
+            cfg_denoise(model.as_ref(), &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         };
 
         if next_amount > 1e-6 {
@@ -987,18 +1057,18 @@ pub fn sample_seeded(
 /// Loads f16 weights as f32 transparently.
 pub fn sample_medium(
     model_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
-    sample_medium_seeded(model_path, class_id, img_size, count, steps, None)
+    sample_medium_seeded(model_path, cond, img_size, count, steps, None)
 }
 
 /// Seeded Quench sample.
 pub fn sample_medium_seeded(
     model_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
@@ -1006,26 +1076,29 @@ pub fn sample_medium_seeded(
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
+    let version = detect_model_version(model_path);
 
     println!("loading Quench model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
-    let n_classes = detect_class_count(model_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
-    let has_null_class = n_classes > 15;
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model = MediumUNet::with_classes(vb, n_classes)?;
+    let model: Box<dyn DiffusionModel> = if version == 2 {
+        Box::new(MediumUNet::with_hybrid(vb, 3)?)
+    } else {
+        let n_classes = detect_class_count(model_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
+        Box::new(MediumUNet::with_classes(vb, n_classes)?)
+    };
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
-    let cfg_scale = if has_null_class { DEFAULT_CFG_SCALE } else { 1.0 };
+    let cfg_scale = DEFAULT_CFG_SCALE;
     let params = MediumUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
     println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);
 
-    let cid_val = class_id.min((n_classes - 1) as u32);
-    let null_val = if has_null_class { CFG_NULL_CLASS } else { 0u32 };
-    let class_tensor = Tensor::new(&vec![cid_val; count as usize][..], &device)?;
-    let null_class = Tensor::new(&vec![null_val; count as usize][..], &device)?;
+    let n = count as usize;
+    let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
 
+    let class_id = cond.super_id;
     let skeleton = load_skeleton("data", class_id, img_size, &device)
         .or_else(|| load_skeleton("data_v2_32", class_id, img_size, &device));
     let use_skeleton = skeleton.is_some();
@@ -1035,7 +1108,6 @@ pub fn sample_medium_seeded(
         println!("  seed: {s}");
     }
 
-    // Build initial noise for each sprite, then stack into (count, 3, H, W)
     let init_tensors: Vec<Tensor> = (0..count)
         .map(|i| {
             let single = if let Some(ref skel) = skeleton {
@@ -1043,10 +1115,10 @@ pub fn sample_medium_seeded(
             } else {
                 seeded_noise(seed, class_id, i, img_size, &device)
             };
-            single.and_then(|t| t.squeeze(0)) // (1,3,H,W) -> (3,H,W)
+            single.and_then(|t| t.squeeze(0))
         })
         .collect::<candle_core::Result<Vec<_>>>()?;
-    let mut x = Tensor::stack(&init_tensors, 0)?; // (count, 3, H, W)
+    let mut x = Tensor::stack(&init_tensors, 0)?;
 
     let max_noise: f32 = if use_skeleton { SKELETON_NOISE } else { 1.0 };
 
@@ -1062,9 +1134,9 @@ pub fn sample_medium_seeded(
 
         let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
         let pred_clean = if is_v_pred {
-            cfg_denoise_vpred(&model, &x, &t, amount, &class_tensor, &null_class, cfg_scale)?
+            cfg_denoise_vpred(model.as_ref(), &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         } else {
-            cfg_denoise(&model, &x, &t, &class_tensor, &null_class, cfg_scale)?
+            cfg_denoise(model.as_ref(), &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         };
 
         if next_amount > 1e-6 {
@@ -1091,18 +1163,24 @@ pub fn sample_medium_seeded(
 /// Loads f16 weights as f32 transparently.
 pub fn sample_anvil(
     model_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
+    let version = detect_model_version(model_path);
 
     println!("loading Anvil model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model = AnvilUNet::new(vb)?;
+    let model: Box<dyn DiffusionModel> = if version == 2 {
+        Box::new(AnvilUNet::new(vb)?)
+    } else {
+        let n_classes = detect_class_count(model_path).unwrap_or(crate::anvil_unet::NUM_CLASSES);
+        Box::new(AnvilUNet::with_classes(vb, n_classes)?)
+    };
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
@@ -1110,8 +1188,7 @@ pub fn sample_anvil(
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
     println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, DEFAULT_CFG_SCALE);
 
-    let class_tensor = Tensor::new(&[class_id], &device)?;
-    let null_class = Tensor::new(&[CFG_NULL_CLASS], &device)?;
+    let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, 1, &device)?;
 
     let mut images = Vec::new();
     for i in 0..count {
@@ -1125,9 +1202,9 @@ pub fn sample_anvil(
 
             let t = Tensor::new(&[amount], &device)?;
             let pred_clean = if is_v_pred {
-                cfg_denoise_vpred(&model, &x, &t, amount, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?
+                cfg_denoise_vpred(model.as_ref(), &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
             } else {
-                cfg_denoise(&model, &x, &t, &class_tensor, &null_class, DEFAULT_CFG_SCALE)?
+                cfg_denoise(model.as_ref(), &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
             };
 
             if next_amount > 1e-6 {

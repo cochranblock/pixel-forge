@@ -212,7 +212,7 @@ pub fn sign_artifact(
 
 /// Full forge pipeline: generate with quality gate → sign → return packet + image.
 pub fn forge_and_sign(
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     count: u32,
     steps: usize,
     threshold: f32,
@@ -227,7 +227,7 @@ pub fn forge_and_sign(
     let signing_key = load_or_create_keypair()?;
 
     let sprites = crate::discriminator::generate_with_gate(
-        tier, class_id, count, steps, threshold, max_attempts, disc_path, &device,
+        tier, cond, count, steps, threshold, max_attempts, disc_path, &device,
     )?;
 
     let mut results = Vec::new();
@@ -238,7 +238,7 @@ pub fn forge_and_sign(
             s
         };
 
-        let packet = sign_artifact(&sprite, class_id, score, latitude, longitude, &signing_key);
+        let packet = sign_artifact(&sprite, cond.super_id, score, latitude, longitude, &signing_key);
         assert!(packet.verify(), "self-verification failed");
         results.push((sprite, packet));
     }

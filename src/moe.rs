@@ -43,17 +43,19 @@ fn ddim_step(
     x: &Tensor,
     amount: f32,
     next_amount: f32,
-    class_tensor: &Tensor,
-    null_class: &Tensor,
+    super_id: &Tensor,
+    tags: &Tensor,
+    null_super: &Tensor,
+    null_tags: &Tensor,
     cfg_scale: f64,
     device: &candle_core::Device,
     v_pred: bool,
 ) -> candle_core::Result<Tensor> {
     let t = Tensor::new(&[amount], device)?;
     let pred_clean = if v_pred {
-        train::cfg_denoise_vpred(model, x, &t, amount, class_tensor, null_class, cfg_scale)?
+        train::cfg_denoise_vpred(model, x, &t, amount, super_id, tags, null_super, null_tags, cfg_scale)?
     } else {
-        train::cfg_denoise(model, x, &t, class_tensor, null_class, cfg_scale)?
+        train::cfg_denoise(model, x, &t, super_id, tags, null_super, null_tags, cfg_scale)?
     };
 
     if next_amount > 1e-6 {
@@ -69,7 +71,7 @@ pub fn cascade_sample(
     quench_path: &str,
     cinder_path: &str,
     experts_path: Option<&str>,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     config: &CascadeConfig,
@@ -111,13 +113,9 @@ pub fn cascade_sample(
         None
     };
 
-    // CFG setup
-    let has_null_q = quench_classes > 15;
-    let has_null_c = cinder_classes > 15;
+    // CFG setup — hybrid conditioning
     let cfg_scale = train::DEFAULT_CFG_SCALE;
-    let max_class = (quench_classes.min(cinder_classes) - 1) as u32;
-    let class_tensor = Tensor::new(&[class_id.min(max_class)], &device)?;
-    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
+    let (super_tensor, tags_tensor, null_super, null_tags) = train::cond_tensors(cond, 1, &device)?;
 
     println!("cascade: {} Quench steps → {} Cinder+Expert steps = {} total, cfg={}",
         config.quench_steps, config.cinder_steps, total_steps, cfg_scale);
@@ -128,18 +126,16 @@ pub fn cascade_sample(
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
 
         // Phase 1: Quench foundation (structure, shapes, composition)
-        let q_cfg = if has_null_q { cfg_scale } else { 1.0 };
         for step in 0..config.quench_steps {
             let t_frac = 1.0 - (step as f32 / total_steps as f32);
             let amount = train::cosine_schedule(t_frac);
             let next_frac = 1.0 - ((step + 1) as f32 / total_steps as f32);
             let next_amount = train::cosine_schedule(next_frac);
 
-            x = ddim_step(&quench, &x, amount, next_amount, &class_tensor, &null_class, q_cfg, &device, quench_v_pred)?;
+            x = ddim_step(&quench, &x, amount, next_amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale, &device, quench_v_pred)?;
         }
 
         // Phase 2: Cinder detail (edges, highlights, fine pixel work)
-        let c_cfg = if has_null_c { cfg_scale } else { 1.0 };
         for step in config.quench_steps..total_steps {
             let t_frac = 1.0 - (step as f32 / total_steps as f32);
             let amount = train::cosine_schedule(t_frac);
@@ -153,9 +149,9 @@ pub fn cascade_sample(
 
             let t = Tensor::new(&[amount], &device)?;
             let pred_clean = if cinder_v_pred {
-                train::cfg_denoise_vpred(&cinder, &x, &t, amount, &class_tensor, &null_class, c_cfg)?
+                train::cfg_denoise_vpred(&cinder, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
             } else {
-                train::cfg_denoise(&cinder, &x, &t, &class_tensor, &null_class, c_cfg)?
+                train::cfg_denoise(&cinder, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
             };
 
             // Expert correction during detail phase
@@ -185,7 +181,7 @@ pub fn cascade_sample(
 /// Desktop pipeline: Anvil handles everything in one stage.
 pub fn anvil_sample(
     anvil_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
@@ -194,18 +190,14 @@ pub fn anvil_sample(
 
     println!("loading Anvil from {anvil_path}{}...",
         if crate::quantize::is_f16(anvil_path) { " (f16→f32)" } else { "" });
-    let anvil_classes = train::detect_class_count_pub(anvil_path).unwrap_or(crate::anvil_unet::NUM_CLASSES);
-    let has_null = anvil_classes > 15;
     let mut anvil_vm = VarMap::new();
     let anvil_vb = VarBuilder::from_varmap(&anvil_vm, DType::F32, &device);
     let anvil = AnvilUNet::new(anvil_vb)?;
     let anvil_v_pred = train::detect_v_pred(anvil_path);
     crate::quantize::load_varmap(&mut anvil_vm, anvil_path)?;
 
-    let cfg_scale = if has_null { train::DEFAULT_CFG_SCALE } else { 1.0 };
-    let max_class = (anvil_classes - 1) as u32;
-    let class_tensor = Tensor::new(&[class_id.min(max_class)], &device)?;
-    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
+    let cfg_scale = train::DEFAULT_CFG_SCALE;
+    let (super_tensor, tags_tensor, null_super, null_tags) = train::cond_tensors(cond, 1, &device)?;
     let mut images = Vec::new();
 
     println!("anvil: {} steps, {} samples, cfg={}", steps, count, cfg_scale);
@@ -219,7 +211,7 @@ pub fn anvil_sample(
             let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
             let next_amount = if step + 1 < steps { train::cosine_schedule(next_frac) } else { 0.0 };
 
-            x = ddim_step(&anvil, &x, amount, next_amount, &class_tensor, &null_class, cfg_scale, &device, anvil_v_pred)?;
+            x = ddim_step(&anvil, &x, amount, next_amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale, &device, anvil_v_pred)?;
         }
 
         let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
@@ -236,7 +228,7 @@ pub fn cascade_with_gate(
     cinder_path: &str,
     experts_path: Option<&str>,
     disc_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     config: &CascadeConfig,
@@ -258,7 +250,7 @@ pub fn cascade_with_gate(
 
         let sprites = cascade_sample(
             quench_path, cinder_path, experts_path,
-            class_id, img_size, batch, config,
+            cond, img_size, batch, config,
         )?;
 
         for sprite in sprites {
@@ -291,7 +283,7 @@ pub fn cascade_with_gate(
 pub fn anvil_with_gate(
     anvil_path: &str,
     disc_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
@@ -311,7 +303,7 @@ pub fn anvil_with_gate(
         let need = count - accepted.len() as u32;
         let batch = need.min(batch_size);
 
-        let sprites = anvil_sample(anvil_path, class_id, img_size, batch, steps)?;
+        let sprites = anvil_sample(anvil_path, cond, img_size, batch, steps)?;
 
         for sprite in sprites {
             let (pass, score) = crate::discriminator::quality_gate(
@@ -344,7 +336,7 @@ pub fn anvil_with_gate(
 pub fn stage_cascade_sample(
     sil_path: &str,
     detail_path: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     sil_steps: usize,
@@ -355,7 +347,6 @@ pub fn stage_cascade_sample(
     // Load Cinder-sil (3ch → silhouette)
     println!("loading Cinder-sil from {sil_path}...");
     let sil_classes = train::detect_class_count_pub(sil_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
-    let has_null_sil = sil_classes > 15;
     let mut sil_vm = VarMap::new();
     let sil_vb = VarBuilder::from_varmap(&sil_vm, DType::F32, &device);
     let sil_model = TinyUNet::with_classes(sil_vb, sil_classes)?;
@@ -364,18 +355,13 @@ pub fn stage_cascade_sample(
     // Load Quench-detail (6ch → sprite)
     println!("loading Quench-detail from {detail_path}...");
     let det_classes = train::detect_class_count_pub(detail_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
-    let has_null_det = det_classes > 15;
     let mut det_vm = VarMap::new();
     let det_vb = VarBuilder::from_varmap(&det_vm, DType::F32, &device);
     let det_model = MediumUNet::with_config(det_vb, det_classes, 6)?;
     crate::quantize::load_varmap(&mut det_vm, detail_path)?;
 
-    let sil_cfg = if has_null_sil { train::DEFAULT_CFG_SCALE } else { 1.0 };
-    let det_cfg = if has_null_det { train::DEFAULT_CFG_SCALE } else { 1.0 };
-
-    let max_class = (sil_classes.min(det_classes) - 1) as u32;
-    let class_tensor = Tensor::new(&[class_id.min(max_class)], &device)?;
-    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
+    let cfg_scale = train::DEFAULT_CFG_SCALE;
+    let (super_tensor, tags_tensor, null_super, null_tags) = train::cond_tensors(cond, 1, &device)?;
     let sz = img_size as usize;
 
     println!("stage cascade: {} sil steps → structure → {} detail steps", sil_steps, detail_steps);
@@ -392,7 +378,7 @@ pub fn stage_cascade_sample(
                 let nf = 1.0 - ((step + 1) as f32 / sil_steps as f32);
                 train::cosine_schedule(nf)
             } else { 0.0 };
-            x = ddim_step(&sil_model, &x, amount, next_amount, &class_tensor, &null_class, sil_cfg, &device, false)?;
+            x = ddim_step(&sil_model, &x, amount, next_amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale, &device, false)?;
         }
         let sil = x.clamp(0.0, 1.0)?;
 
@@ -433,7 +419,7 @@ pub fn stage_cascade_sample(
             // Concat structure + noisy: (1, 6, H, W)
             let input_6ch = Tensor::cat(&[&struct_tensor, &x], 1)?;
             let t = Tensor::new(&[amount], &device)?;
-            let pred_clean = train::cfg_denoise(&det_model, &input_6ch, &t, &class_tensor, &null_class, det_cfg)?;
+            let pred_clean = train::cfg_denoise(&det_model, &input_6ch, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?;
 
             if next_amount > 1e-6 {
                 let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
@@ -457,7 +443,7 @@ pub fn detail_only_sample(
     detail_path: &str,
     struct_dir: &str,
     class_name: &str,
-    class_id: u32,
+    cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     steps: usize,
@@ -468,15 +454,13 @@ pub fn detail_only_sample(
     // Load Quench-detail (6ch)
     println!("loading Quench-detail from {detail_path}...");
     let det_classes = train::detect_class_count_pub(detail_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
-    let has_null = det_classes > 15;
     let mut det_vm = VarMap::new();
     let det_vb = VarBuilder::from_varmap(&det_vm, DType::F32, &device);
     let det_model = MediumUNet::with_config(det_vb, det_classes, 6)?;
     crate::quantize::load_varmap(&mut det_vm, detail_path)?;
 
-    let cfg = if has_null { train::DEFAULT_CFG_SCALE } else { 1.0 };
-    let class_tensor = Tensor::new(&[class_id.min((det_classes - 1) as u32)], &device)?;
-    let null_class = Tensor::new(&[train::CFG_NULL_CLASS], &device)?;
+    let cfg_scale = train::DEFAULT_CFG_SCALE;
+    let (super_tensor, tags_tensor, null_super, null_tags) = train::cond_tensors(cond, 1, &device)?;
 
     // Load real structure PNGs
     let struct_class_dir = std::path::Path::new(struct_dir).join(class_name);
@@ -516,7 +500,7 @@ pub fn detail_only_sample(
 
             let input_6ch = Tensor::cat(&[&struct_tensor, &x], 1)?;
             let t = Tensor::new(&[amount], &device)?;
-            let pred_clean = train::cfg_denoise(&det_model, &input_6ch, &t, &class_tensor, &null_class, cfg)?;
+            let pred_clean = train::cfg_denoise(&det_model, &input_6ch, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?;
 
             if next_amount > 1e-6 {
                 let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;

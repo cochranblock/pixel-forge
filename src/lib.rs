@@ -3,6 +3,7 @@
 //! pixel-forge library — exposes the app and core modules for mobile builds.
 #![allow(dead_code)]
 
+pub mod class_cond;
 pub mod palette;
 pub mod grid;
 pub mod sheet;

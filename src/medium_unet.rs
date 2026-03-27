@@ -16,8 +16,29 @@ use candle_nn::{self as nn, VarBuilder, VarMap};
 /// Channel config per resolution level — 2x wider than Tiny.
 const CHANNELS: [usize; 3] = [64, 128, 128];
 
-/// Number of class labels for conditioning.
+/// Legacy class count — kept for backwards compat with old models.
 pub const NUM_CLASSES: usize = 16; // 15 classes + 1 null (CFG unconditional)
+
+use crate::class_cond::{NUM_SUPER_WITH_NULL, NUM_TAGS};
+
+/// Class conditioner: legacy (single embedding) or hybrid (super-cat + tags).
+enum ClassConditioner {
+    Legacy(nn::Embedding),
+    Hybrid { super_emb: nn::Embedding, tag_proj: nn::Linear },
+}
+
+impl ClassConditioner {
+    fn forward_hybrid(&self, super_id: &Tensor, tags: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Hybrid { super_emb, tag_proj } => {
+                let s = super_emb.forward(super_id)?;
+                let t = tag_proj.forward(tags)?;
+                s + t
+            }
+            Self::Legacy(emb) => emb.forward(super_id),
+        }
+    }
+}
 
 /// Timestep embedding dimension — 2x wider than Tiny.
 const TIME_DIM: usize = 128;
@@ -186,7 +207,7 @@ pub struct MediumUNet {
     conv_in: nn::Conv2d,
     time_mlp1: nn::Linear,
     time_mlp2: nn::Linear,
-    class_emb: nn::Embedding,
+    class_cond: ClassConditioner,
     // Encoder: 3 ResBlocks per level
     down_blocks: Vec<(ResBlock, ResBlock, ResBlock)>,
     downsamples: Vec<Downsample>,
@@ -204,24 +225,40 @@ pub struct MediumUNet {
 }
 
 impl MediumUNet {
-    /// Build with default NUM_CLASSES.
+    /// Build with default hybrid conditioning.
     pub fn new(vb: VarBuilder) -> Result<Self> {
-        Self::with_classes(vb, NUM_CLASSES)
+        Self::with_hybrid(vb, 3)
     }
 
-    /// Build with explicit class count (use 15 for pre-CFG saved weights).
+    /// Build with legacy class embedding (for loading old models).
     pub fn with_classes(vb: VarBuilder, num_classes: usize) -> Result<Self> {
         Self::with_config(vb, num_classes, 3)
     }
 
-    /// Configurable input channels (3 for standalone, 6 for conditioned generation).
+    /// Hybrid conditioning: super-category embedding + tag projection.
+    pub fn with_hybrid(vb: VarBuilder, in_channels: usize) -> Result<Self> {
+        let dtype = vb.dtype();
+        let conv_in = nn::conv2d(in_channels, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
+        let time_mlp1 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp1"))?;
+        let time_mlp2 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp2"))?;
+        let class_cond = ClassConditioner::Hybrid {
+            super_emb: nn::embedding(NUM_SUPER_WITH_NULL, TIME_DIM, vb.pp("super_emb"))?,
+            tag_proj: nn::linear(NUM_TAGS, TIME_DIM, vb.pp("tag_proj"))?,
+        };
+        Self::build(conv_in, time_mlp1, time_mlp2, class_cond, vb, dtype)
+    }
+
+    /// Legacy: configurable input channels + class count.
     pub fn with_config(vb: VarBuilder, num_classes: usize, in_channels: usize) -> Result<Self> {
         let dtype = vb.dtype();
         let conv_in = nn::conv2d(in_channels, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
-
         let time_mlp1 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp1"))?;
         let time_mlp2 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp2"))?;
-        let class_emb = nn::embedding(num_classes, TIME_DIM, vb.pp("class_emb"))?;
+        let class_cond = ClassConditioner::Legacy(nn::embedding(num_classes, TIME_DIM, vb.pp("class_emb"))?);
+        Self::build(conv_in, time_mlp1, time_mlp2, class_cond, vb, dtype)
+    }
+
+    fn build(conv_in: nn::Conv2d, time_mlp1: nn::Linear, time_mlp2: nn::Linear, class_cond: ClassConditioner, vb: VarBuilder, dtype: DType) -> Result<Self> {
 
         // Encoder: 3 levels, 3 ResBlocks each
         let mut down_blocks = Vec::new();
@@ -266,7 +303,7 @@ impl MediumUNet {
         Ok(Self {
             conv_in,
             time_mlp1, time_mlp2,
-            class_emb,
+            class_cond,
             down_blocks, downsamples,
             mid_block1, mid_attn, mid_block2,
             up_blocks, upsamples,
@@ -276,13 +313,13 @@ impl MediumUNet {
     }
 
     /// Encode: input → bottleneck features + skip connections + time embedding.
-    pub fn encode(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> Result<(Tensor, Vec<Tensor>, Tensor)> {
+    pub fn encode(&self, x: &Tensor, timestep: &Tensor, super_id: &Tensor, tags: &Tensor) -> Result<(Tensor, Vec<Tensor>, Tensor)> {
         let device = x.device();
 
         let t_emb = timestep_embedding(timestep, TIME_DIM, self.dtype, device)?;
         let t_emb = candle_nn::ops::silu(&self.time_mlp1.forward(&t_emb)?)?;
         let t_emb = self.time_mlp2.forward(&t_emb)?;
-        let c_emb = self.class_emb.forward(class_id)?;
+        let c_emb = self.class_cond.forward_hybrid(super_id, tags)?;
         let t_emb = (t_emb + c_emb)?;
 
         let mut h = self.conv_in.forward(x)?;
@@ -324,8 +361,8 @@ impl MediumUNet {
     }
 
     /// Forward pass (encode → decode, no expert intervention).
-    pub fn forward(&self, x: &Tensor, timestep: &Tensor, class_id: &Tensor) -> Result<Tensor> {
-        let (h, skips, t_emb) = self.encode(x, timestep, class_id)?;
+    pub fn forward(&self, x: &Tensor, timestep: &Tensor, super_id: &Tensor, tags: &Tensor) -> Result<Tensor> {
+        let (h, skips, t_emb) = self.encode(x, timestep, super_id, tags)?;
         self.decode(&h, &skips, &t_emb)
     }
 

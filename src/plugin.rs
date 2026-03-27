@@ -144,16 +144,14 @@ fn handle_generate(args: &serde_json::Value) -> PluginResponse {
     let steps = args.get("steps").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let palette = args.get("palette").and_then(|v| v.as_str()).unwrap_or("stardew");
 
-    let class_id = CLASS_NAMES.iter()
-        .position(|&n| n == class.to_lowercase())
-        .unwrap_or(14) as u32;
+    let cond = crate::class_cond::lookup(&class.to_lowercase());
 
     let pal = match crate::palette::load_palette(palette) {
         Ok(p) => p,
         Err(e) => return PluginResponse::fail(format!("palette: {e}")),
     };
 
-    let raw_images = match device_cap::auto_sample(class_id, 16, count, steps) {
+    let raw_images = match device_cap::auto_sample(&cond, 16, count, steps) {
         Ok(imgs) => imgs,
         Err(e) => return PluginResponse::fail(format!("generate: {e}")),
     };
