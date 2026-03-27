@@ -283,6 +283,7 @@ pub fn quality_gate(
 
 /// Generate with quality gate — keep re-rolling rejects.
 /// Returns only sprites that pass the discriminator threshold.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_with_gate(
     _tier: crate::device_cap::Tier,
     cond: &crate::class_cond::ClassCond,

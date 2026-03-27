@@ -115,7 +115,7 @@ pub fn hash_sprite(sprite: &RgbaImage) -> [u8; 32] {
     for y in 0..sprite.height().min(32) {
         for x in 0..sprite.width().min(32) {
             let p = sprite.get_pixel(x, y);
-            hasher.update(&[p[0], p[1], p[2]]);
+            hasher.update([p[0], p[1], p[2]]);
         }
     }
     hasher.finalize().into()
@@ -211,6 +211,7 @@ pub fn sign_artifact(
 }
 
 /// Full forge pipeline: generate with quality gate → sign → return packet + image.
+#[allow(clippy::too_many_arguments)]
 pub fn forge_and_sign(
     cond: &crate::class_cond::ClassCond,
     count: u32,

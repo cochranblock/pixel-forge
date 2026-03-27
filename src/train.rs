@@ -122,13 +122,12 @@ impl EmaWeights {
     fn update(&mut self, varmap: &VarMap) {
         let vars = varmap.all_vars();
         for (shadow, var) in self.shadow.iter_mut().zip(vars.iter()) {
-            if let Ok(current_cpu) = var.as_tensor().to_device(&Device::Cpu) {
-                if let Ok(new_shadow) = shadow.affine(self.decay, 0.0)
+            if let Ok(current_cpu) = var.as_tensor().to_device(&Device::Cpu)
+                && let Ok(new_shadow) = shadow.affine(self.decay, 0.0)
                     .and_then(|s| current_cpu.affine(1.0 - self.decay, 0.0)
                         .and_then(|c| &s + &c))
-                {
-                    *shadow = new_shadow;
-                }
+            {
+                *shadow = new_shadow;
             }
         }
     }
@@ -354,8 +353,8 @@ fn palette_swap(px: &mut [f32], _stride: usize, img_size: u32) {
         let g = (px[n + i] * 255.0) as u8;
         let b = (px[2 * n + i] * 255.0) as u8;
         let key = (r as u32) << 16 | (g as u32) << 8 | b as u32;
-        if !seen.contains_key(&key) {
-            seen.insert(key, colors.len());
+        if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
+            e.insert(colors.len());
             colors.push(key);
             if colors.len() >= 64 { break; }
         }
@@ -523,7 +522,7 @@ fn train_inner(
         let mut batch_count = 0;
         let mut rng = rand::thread_rng();
 
-        let num_batches = (n + config.batch_size - 1) / config.batch_size;
+        let num_batches = n.div_ceil(config.batch_size);
         for batch_idx in 0..num_batches {
             let start = batch_idx * config.batch_size;
             let end = (start + config.batch_size).min(n);
@@ -740,6 +739,7 @@ fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, dev
 /// CFG-guided denoising step: run model conditioned + unconditional,
 /// blend predictions to amplify class signal.
 /// For v-pred models, converts v→clean before CFG blend to avoid amplifying velocity.
+#[allow(clippy::too_many_arguments)]
 pub fn cfg_denoise(
     model: &dyn DiffusionModel,
     x: &Tensor,
@@ -761,6 +761,7 @@ pub fn cfg_denoise(
 
 /// CFG for v-pred models: convert v→clean before blending, then return clean.
 /// This prevents CFG scale from amplifying velocity values out of range.
+#[allow(clippy::too_many_arguments)]
 pub fn cfg_denoise_vpred(
     model: &dyn DiffusionModel,
     x: &Tensor,
@@ -807,8 +808,8 @@ pub fn compute_skeletons(data_dir: &str, img_size: u32) -> Result<()> {
         if c >= num_classes { continue; }
         counts[c] += 1;
         let offset = i * stride;
-        for j in 0..stride {
-            sums[c][j] += dataset.pixels[offset + j] as f64;
+        for (j, sum) in sums[c].iter_mut().enumerate() {
+            *sum += dataset.pixels[offset + j] as f64;
         }
     }
 
@@ -834,15 +835,14 @@ pub fn load_skeleton(data_dir: &str, class_id: u32, img_size: u32, device: &Devi
     let path = format!("{}/skeletons.safetensors", data_dir);
     if !Path::new(&path).exists() {
         // Also check next to the model (CWD, HOME, exe dir)
-        for candidate in ["skeletons.safetensors"] {
-            if Path::new(candidate).exists() {
-                return load_skeleton_from(candidate, class_id, img_size, device);
-            }
-            if let Ok(home) = std::env::var("HOME") {
-                let home_path = format!("{}/{}", home, candidate);
-                if Path::new(&home_path).exists() {
-                    return load_skeleton_from(&home_path, class_id, img_size, device);
-                }
+        let candidate = "skeletons.safetensors";
+        if Path::new(candidate).exists() {
+            return load_skeleton_from(candidate, class_id, img_size, device);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let home_path = format!("{}/{}", home, candidate);
+            if Path::new(&home_path).exists() {
+                return load_skeleton_from(&home_path, class_id, img_size, device);
             }
         }
         return None;

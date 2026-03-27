@@ -2,6 +2,7 @@
 // Contributors: GotEmCoach, KOVA, Claude Opus 4.6
 //! pixel-forge library — exposes the app and core modules for mobile builds.
 #![allow(dead_code)]
+#![allow(clippy::manual_is_multiple_of)]
 
 pub mod class_cond;
 pub mod palette;

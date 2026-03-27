@@ -801,7 +801,7 @@ fn generate_for_display(
         })
         .collect();
 
-    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(|img| rgba_to_f32(img)).collect();
+    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(rgba_to_f32).collect();
 
     let sheet = crate::sheet::pack_grid(&processed, count.min(8));
     let w = sheet.width();
@@ -861,7 +861,7 @@ fn cascade_for_display(
         })
         .collect();
 
-    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(|img| rgba_to_f32(img)).collect();
+    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(rgba_to_f32).collect();
 
     let sheet = crate::sheet::pack_grid(&processed, count.min(8));
     let w = sheet.width();
@@ -899,7 +899,7 @@ fn anvil_for_display(
         })
         .collect();
 
-    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(|img| rgba_to_f32(img)).collect();
+    let sprites_f32: Vec<Vec<f32>> = processed.iter().map(rgba_to_f32).collect();
 
     let sheet = crate::sheet::pack_grid(&processed, count.min(8));
     let w = sheet.width();

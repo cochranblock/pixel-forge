@@ -60,7 +60,7 @@ pub fn train_experts(
         let mut epoch_loss = 0.0f64;
         let mut batches = 0;
 
-        let num_batches = (n + batch_size - 1) / batch_size;
+        let num_batches = n.div_ceil(batch_size);
         for batch_idx in 0..num_batches {
             let start = batch_idx * batch_size;
             let end = (start + batch_size).min(n);
