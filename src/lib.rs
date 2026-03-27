@@ -36,3 +36,22 @@ pub mod gpu_lock;
 pub mod poa;
 pub mod quantize;
 pub mod relight;
+
+/// Recursively collect all .png files under a directory.
+pub fn walk_pngs(dir: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    fn recurse(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(path) else { return };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                recurse(&p, out);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("png") {
+                out.push(p);
+            }
+        }
+    }
+    recurse(std::path::Path::new(dir), &mut out);
+    out.sort();
+    out
+}

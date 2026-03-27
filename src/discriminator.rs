@@ -94,10 +94,9 @@ fn load_images(dir: &str, device: &Device, max: usize) -> anyhow::Result<Tensor>
     let mut pixels = Vec::new();
     let mut count = 0;
 
-    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for path in crate::walk_pngs(dir) {
         if count >= max { break; }
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("png") { continue; }
+        let path = &path;
 
         let img = image::open(path)?.to_rgb8();
         if img.width() != 32 || img.height() != 32 { continue; }

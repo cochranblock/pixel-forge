@@ -140,9 +140,8 @@ pub fn generate_keypair() -> ([u8; 32], [u8; 32]) {
 /// Load or generate a node keypair from disk.
 /// Stored at `~/.pixel-forge/node.key` (32-byte secret).
 pub fn load_or_create_keypair() -> anyhow::Result<SigningKey> {
-    let dir = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("no home dir"))?
-        .join(".pixel-forge");
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
+    let dir = std::path::PathBuf::from(home).join(".pixel-forge");
     std::fs::create_dir_all(&dir)?;
     let key_path = dir.join("node.key");
 

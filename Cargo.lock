@@ -4020,7 +4020,6 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "clap",
- "dirs",
  "ed25519-dalek",
  "eframe",
  "egui",
@@ -4032,8 +4031,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokenizers",
- "tokio",
- "walkdir",
  "zstd",
 ]
 
@@ -5314,9 +5311,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
- "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

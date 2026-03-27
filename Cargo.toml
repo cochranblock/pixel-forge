@@ -28,7 +28,6 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-tokio = { version = "1", features = ["full"] }
 image = "0.25"
 candle-core = "0.8"
 candle-nn = "0.8"
@@ -36,13 +35,18 @@ candle-transformers = { version = "0.8", optional = true }
 hf-hub = { version = "0.4", optional = true }
 tokenizers = { version = "0.21", optional = true }
 rand = "0.8"
-walkdir = "2"
 bincode = "1"
 zstd = "0.13"
 eframe = "0.33"
 egui = "0.33"
 base64 = "0.22"
-dirs = "6.0.0"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 sha2 = "0.10"
 half = "2"
+
+[profile.release]
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true

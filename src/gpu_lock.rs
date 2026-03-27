@@ -36,7 +36,7 @@ pub fn status() -> Result<()> {
 pub fn is_available(node: &str) -> bool {
     !std::path::Path::new(&format!(
         "{}/.kova/gpu/{node}.lock",
-        dirs::home_dir().unwrap_or_default().display()
+        std::env::var("HOME").unwrap_or_default()
     ))
     .exists()
 }
