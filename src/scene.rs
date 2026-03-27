@@ -11,8 +11,6 @@ use image::RgbaImage;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::tiny_unet::NUM_CLASSES;
-
 /// Grid dimensions.
 pub const GRID_W: usize = 8;
 pub const GRID_H: usize = 8;
@@ -20,10 +18,12 @@ pub const GRID_CELLS: usize = GRID_W * GRID_H; // 64
 pub const CELL_PX: u32 = 32;
 pub const SCENE_PX: u32 = GRID_W as u32 * CELL_PX; // 256
 
+/// Number of scene classes (15 real + 1 empty).
+const NUM_SCENE_CLASSES: usize = 15;
 /// Empty cell class ID — one past the real classes.
-pub const EMPTY_CLASS: u32 = NUM_CLASSES as u32; // 15
+pub const EMPTY_CLASS: u32 = NUM_SCENE_CLASSES as u32; // 15
 /// Total class IDs including empty.
-pub const TOTAL_CLASSES: usize = NUM_CLASSES + 1; // 16
+pub const TOTAL_CLASSES: usize = NUM_SCENE_CLASSES + 1; // 16
 
 /// Cell encoding dimension: 16 one-hot class + 2 position + 1 occupied = 19.
 pub const CELL_DIM: usize = TOTAL_CLASSES + 2 + 1; // 19

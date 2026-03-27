@@ -82,20 +82,18 @@ pub fn cascade_sample(
     // Load Quench (foundation — runs first)
     println!("loading Quench from {quench_path}{}...",
         if crate::quantize::is_f16(quench_path) { " (f16→f32)" } else { "" });
-    let quench_classes = train::detect_class_count_pub(quench_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let mut quench_vm = VarMap::new();
     let quench_vb = VarBuilder::from_varmap(&quench_vm, DType::F32, &device);
-    let quench = MediumUNet::with_classes(quench_vb, quench_classes)?;
+    let quench = MediumUNet::new(quench_vb)?;
     let quench_v_pred = train::detect_v_pred(quench_path);
     crate::quantize::load_varmap(&mut quench_vm, quench_path)?;
 
     // Load Cinder (detail — runs second)
     println!("loading Cinder from {cinder_path}{}...",
         if crate::quantize::is_f16(cinder_path) { " (f16→f32)" } else { "" });
-    let cinder_classes = train::detect_class_count_pub(cinder_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let mut cinder_vm = VarMap::new();
     let cinder_vb = VarBuilder::from_varmap(&cinder_vm, DType::F32, &device);
-    let cinder = TinyUNet::with_classes(cinder_vb, cinder_classes)?;
+    let cinder = TinyUNet::new(cinder_vb)?;
     let cinder_v_pred = train::detect_v_pred(cinder_path);
     crate::quantize::load_varmap(&mut cinder_vm, cinder_path)?;
 
@@ -346,18 +344,16 @@ pub fn stage_cascade_sample(
 
     // Load Cinder-sil (3ch → silhouette)
     println!("loading Cinder-sil from {sil_path}...");
-    let sil_classes = train::detect_class_count_pub(sil_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
     let mut sil_vm = VarMap::new();
     let sil_vb = VarBuilder::from_varmap(&sil_vm, DType::F32, &device);
-    let sil_model = TinyUNet::with_classes(sil_vb, sil_classes)?;
+    let sil_model = TinyUNet::new(sil_vb)?;
     crate::quantize::load_varmap(&mut sil_vm, sil_path)?;
 
     // Load Quench-detail (6ch → sprite)
     println!("loading Quench-detail from {detail_path}...");
-    let det_classes = train::detect_class_count_pub(detail_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let mut det_vm = VarMap::new();
     let det_vb = VarBuilder::from_varmap(&det_vm, DType::F32, &device);
-    let det_model = MediumUNet::with_config(det_vb, det_classes, 6)?;
+    let det_model = MediumUNet::with_channels(det_vb, 6)?;
     crate::quantize::load_varmap(&mut det_vm, detail_path)?;
 
     let cfg_scale = train::DEFAULT_CFG_SCALE;
@@ -453,10 +449,9 @@ pub fn detail_only_sample(
 
     // Load Quench-detail (6ch)
     println!("loading Quench-detail from {detail_path}...");
-    let det_classes = train::detect_class_count_pub(detail_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
     let mut det_vm = VarMap::new();
     let det_vb = VarBuilder::from_varmap(&det_vm, DType::F32, &device);
-    let det_model = MediumUNet::with_config(det_vb, det_classes, 6)?;
+    let det_model = MediumUNet::with_channels(det_vb, 6)?;
     crate::quantize::load_varmap(&mut det_vm, detail_path)?;
 
     let cfg_scale = train::DEFAULT_CFG_SCALE;

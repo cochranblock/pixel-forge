@@ -20,36 +20,6 @@ use crate::tiny_unet::TinyUNet;
 use crate::medium_unet::MediumUNet;
 use crate::anvil_unet::AnvilUNet;
 
-/// Detect class count from a safetensors file by reading class_emb.weight shape.
-/// Public alias for cross-module use.
-pub fn detect_class_count_pub(path: &str) -> Option<usize> {
-    detect_class_count(path)
-}
-
-fn detect_class_count(path: &str) -> Option<usize> {
-    let data = std::fs::read(path).ok()?;
-    if data.len() < 8 { return None; }
-    let header_len = u64::from_le_bytes(data[..8].try_into().ok()?) as usize;
-    let header_str = std::str::from_utf8(data.get(8..8 + header_len)?).ok()?;
-    let header: serde_json::Value = serde_json::from_str(header_str).ok()?;
-    let shape = header.get("class_emb.weight")?.get("shape")?.as_array()?;
-    shape.first()?.as_u64().map(|n| n as usize)
-}
-
-/// Detect model version: 2 = hybrid (super_emb + tag_proj), 1 = legacy (class_emb).
-pub fn detect_model_version(path: &str) -> u8 {
-    let data = match std::fs::read(path) { Ok(d) => d, Err(_) => return 1 };
-    if data.len() < 8 { return 1; }
-    let header_len = match u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8])) {
-        0 => return 1,
-        n => n as usize,
-    };
-    let header_str = match std::str::from_utf8(data.get(8..8 + header_len).unwrap_or(&[])) {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    if header_str.contains("super_emb.weight") { 2 } else { 1 }
-}
 
 /// Training config.
 pub struct TrainConfig {
@@ -194,10 +164,6 @@ impl EmaWeights {
     }
 }
 
-/// Unconditional class ID for CFG — index 15 is the "null" class.
-/// Model sees this during training when class is dropped.
-/// Legacy CFG null class — kept for old model compat.
-pub const CFG_NULL_CLASS: u32 = 15;
 
 /// Trait to unify UNet forward passes with hybrid conditioning.
 pub trait DiffusionModel {
@@ -732,12 +698,12 @@ pub fn train(config: &TrainConfig) -> Result<()> {
         println!("model: Anvil (AnvilUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     } else if config.medium {
-        let model = MediumUNet::with_config(vb, crate::medium_unet::NUM_CLASSES, in_ch)?;
+        let model = MediumUNet::with_channels(vb, in_ch)?;
         let params = MediumUNet::param_count(&varmap);
         println!("model: Quench (MediumUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     } else {
-        let model = TinyUNet::with_config(vb, crate::tiny_unet::NUM_CLASSES, in_ch)?;
+        let model = TinyUNet::with_channels(vb, in_ch)?;
         let params = TinyUNet::param_count(&varmap);
         println!("model: Cinder (TinyUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
@@ -966,17 +932,11 @@ pub fn sample_seeded(
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
-    let version = detect_model_version(model_path);
 
     println!("loading model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model: Box<dyn DiffusionModel> = if version == 2 {
-        Box::new(TinyUNet::with_hybrid(vb, 3)?)
-    } else {
-        let n_classes = detect_class_count(model_path).unwrap_or(crate::tiny_unet::NUM_CLASSES);
-        Box::new(TinyUNet::with_classes(vb, n_classes)?)
-    };
+    let model = TinyUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
@@ -1028,9 +988,9 @@ pub fn sample_seeded(
 
         let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
         let pred_clean = if is_v_pred {
-            cfg_denoise_vpred(model.as_ref(), &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
+            cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         } else {
-            cfg_denoise(model.as_ref(), &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
+            cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         };
 
         if next_amount > 1e-6 {
@@ -1076,17 +1036,11 @@ pub fn sample_medium_seeded(
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
-    let version = detect_model_version(model_path);
 
     println!("loading Quench model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model: Box<dyn DiffusionModel> = if version == 2 {
-        Box::new(MediumUNet::with_hybrid(vb, 3)?)
-    } else {
-        let n_classes = detect_class_count(model_path).unwrap_or(crate::medium_unet::NUM_CLASSES);
-        Box::new(MediumUNet::with_classes(vb, n_classes)?)
-    };
+    let model = MediumUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
@@ -1134,9 +1088,9 @@ pub fn sample_medium_seeded(
 
         let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
         let pred_clean = if is_v_pred {
-            cfg_denoise_vpred(model.as_ref(), &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
+            cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         } else {
-            cfg_denoise(model.as_ref(), &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
+            cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         };
 
         if next_amount > 1e-6 {
@@ -1170,17 +1124,11 @@ pub fn sample_anvil(
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
-    let version = detect_model_version(model_path);
 
     println!("loading Anvil model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model: Box<dyn DiffusionModel> = if version == 2 {
-        Box::new(AnvilUNet::new(vb)?)
-    } else {
-        let n_classes = detect_class_count(model_path).unwrap_or(crate::anvil_unet::NUM_CLASSES);
-        Box::new(AnvilUNet::with_classes(vb, n_classes)?)
-    };
+    let model = AnvilUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
 
@@ -1202,9 +1150,9 @@ pub fn sample_anvil(
 
             let t = Tensor::new(&[amount], &device)?;
             let pred_clean = if is_v_pred {
-                cfg_denoise_vpred(model.as_ref(), &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
+                cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
             } else {
-                cfg_denoise(model.as_ref(), &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
+                cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
             };
 
             if next_amount > 1e-6 {

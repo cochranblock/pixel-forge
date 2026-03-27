@@ -86,7 +86,7 @@ impl SwipeStore {
             if swipe.pixels.len() != PIXEL_STRIDE {
                 anyhow::bail!("corrupt swipe: pixel len {} != {}", swipe.pixels.len(), PIXEL_STRIDE);
             }
-            if swipe.class_id >= crate::tiny_unet::NUM_CLASSES as u32 {
+            if swipe.class_id >= crate::class_cond::NUM_SUPER_WITH_NULL as u32 {
                 anyhow::bail!("corrupt swipe: class_id {} out of range", swipe.class_id);
             }
         }

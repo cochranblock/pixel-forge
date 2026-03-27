@@ -16,29 +16,7 @@ use candle_nn::{self as nn, VarBuilder, VarMap};
 /// Channel config per resolution level — 1.5x wider than Quench.
 const CHANNELS: [usize; 3] = [96, 192, 192];
 
-/// Legacy class count — kept for backwards compat with old models.
-pub const NUM_CLASSES: usize = 16; // 15 classes + 1 null (CFG unconditional)
-
 use crate::class_cond::{NUM_SUPER_WITH_NULL, NUM_TAGS};
-
-/// Class conditioner: legacy (single embedding) or hybrid (super-cat + tags).
-enum ClassConditioner {
-    Legacy(nn::Embedding),
-    Hybrid { super_emb: nn::Embedding, tag_proj: nn::Linear },
-}
-
-impl ClassConditioner {
-    fn forward_hybrid(&self, super_id: &Tensor, tags: &Tensor) -> Result<Tensor> {
-        match self {
-            Self::Hybrid { super_emb, tag_proj } => {
-                let s = super_emb.forward(super_id)?;
-                let t = tag_proj.forward(tags)?;
-                s + t
-            }
-            Self::Legacy(emb) => emb.forward(super_id),
-        }
-    }
-}
 
 /// Timestep embedding dimension — 2x wider than Quench.
 const TIME_DIM: usize = 256;
@@ -201,7 +179,8 @@ pub struct AnvilUNet {
     conv_in: nn::Conv2d,
     time_mlp1: nn::Linear,
     time_mlp2: nn::Linear,
-    class_cond: ClassConditioner,
+    super_emb: nn::Embedding,
+    tag_proj: nn::Linear,
     // Encoder: 4 ResBlocks per level
     down_blocks: Vec<Vec<ResBlock>>,
     down_attns: Vec<Option<SelfAttention>>,
@@ -221,30 +200,13 @@ pub struct AnvilUNet {
 }
 
 impl AnvilUNet {
-    /// Build with hybrid conditioning (default for new models).
     pub fn new(vb: VarBuilder) -> Result<Self> {
         let dtype = vb.dtype();
         let conv_in = nn::conv2d(3, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
         let time_mlp1 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp1"))?;
         let time_mlp2 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp2"))?;
-        let class_cond = ClassConditioner::Hybrid {
-            super_emb: nn::embedding(NUM_SUPER_WITH_NULL, TIME_DIM, vb.pp("super_emb"))?,
-            tag_proj: nn::linear(NUM_TAGS, TIME_DIM, vb.pp("tag_proj"))?,
-        };
-        Self::build(conv_in, time_mlp1, time_mlp2, class_cond, vb, dtype)
-    }
-
-    /// Build with legacy class embedding (for loading old models).
-    pub fn with_classes(vb: VarBuilder, n_classes: usize) -> Result<Self> {
-        let dtype = vb.dtype();
-        let conv_in = nn::conv2d(3, CHANNELS[0], 3, nn::Conv2dConfig { padding: 1, ..Default::default() }, vb.pp("conv_in"))?;
-        let time_mlp1 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp1"))?;
-        let time_mlp2 = nn::linear(TIME_DIM, TIME_DIM, vb.pp("time_mlp2"))?;
-        let class_cond = ClassConditioner::Legacy(nn::embedding(n_classes, TIME_DIM, vb.pp("class_emb"))?);
-        Self::build(conv_in, time_mlp1, time_mlp2, class_cond, vb, dtype)
-    }
-
-    fn build(conv_in: nn::Conv2d, time_mlp1: nn::Linear, time_mlp2: nn::Linear, class_cond: ClassConditioner, vb: VarBuilder, dtype: DType) -> Result<Self> {
+        let super_emb = nn::embedding(NUM_SUPER_WITH_NULL, TIME_DIM, vb.pp("super_emb"))?;
+        let tag_proj = nn::linear(NUM_TAGS, TIME_DIM, vb.pp("tag_proj"))?;
 
         let blocks_per_level = 4;
 
@@ -314,7 +276,7 @@ impl AnvilUNet {
         Ok(Self {
             conv_in,
             time_mlp1, time_mlp2,
-            class_cond,
+            super_emb, tag_proj,
             down_blocks, down_attns, downsamples,
             mid_block1, mid_attn, mid_block2,
             up_blocks, up_attns, upsamples,
@@ -331,7 +293,7 @@ impl AnvilUNet {
         let t_emb = timestep_embedding(timestep, TIME_DIM, self.dtype, device)?;
         let t_emb = candle_nn::ops::silu(&self.time_mlp1.forward(&t_emb)?)?;
         let t_emb = self.time_mlp2.forward(&t_emb)?;
-        let c_emb = self.class_cond.forward_hybrid(super_id, tags)?;
+        let c_emb = (self.super_emb.forward(super_id)? + self.tag_proj.forward(tags)?)?;
         let t_emb = (t_emb + c_emb)?;
 
         // Encoder
