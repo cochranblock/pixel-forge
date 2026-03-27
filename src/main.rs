@@ -1506,7 +1506,7 @@ fn main() -> anyhow::Result<()> {
 
             // Write packet to .poa file alongside the image
             let poa_path = format!("{}.poa", image.trim_end_matches(".png"));
-            std::fs::write(&poa_path, &wire)?;
+            std::fs::write(&poa_path, wire)?;
             println!("saved: {poa_path}");
         }
         Cmd::NodeKey => {

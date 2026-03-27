@@ -38,6 +38,7 @@ impl Default for CascadeConfig {
 /// DDIM step: predict clean → extract noise → recompose at next noise level.
 /// When v_pred is true, the model output is velocity (noise - clean) and we
 /// recover clean via: clean = noisy - amount * v_pred.
+#[allow(clippy::too_many_arguments)]
 fn ddim_step(
     model: &dyn DiffusionModel,
     x: &Tensor,
@@ -221,6 +222,7 @@ pub fn anvil_sample(
 }
 
 /// MoE cascade with discriminator quality gate.
+#[allow(clippy::too_many_arguments)]
 pub fn cascade_with_gate(
     quench_path: &str,
     cinder_path: &str,
@@ -278,6 +280,7 @@ pub fn cascade_with_gate(
 }
 
 /// Anvil with discriminator quality gate.
+#[allow(clippy::too_many_arguments)]
 pub fn anvil_with_gate(
     anvil_path: &str,
     disc_path: &str,

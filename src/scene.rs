@@ -389,10 +389,10 @@ fn enforce_constraints(grid: &mut SceneGrid) {
     for row in 0..GRID_H {
         for col in 0..GRID_W {
             let cid = grid.get(col, row).class_id;
-            if cid == class::WEAPON || cid == class::ARMOR {
-                if !has_adjacent(grid, col, row, &[class::CHARACTER, class::ENEMY]) {
-                    grid.set(col, row, EMPTY_CLASS);
-                }
+            if (cid == class::WEAPON || cid == class::ARMOR)
+                && !has_adjacent(grid, col, row, &[class::CHARACTER, class::ENEMY])
+            {
+                grid.set(col, row, EMPTY_CLASS);
             }
         }
     }
@@ -400,12 +400,12 @@ fn enforce_constraints(grid: &mut SceneGrid) {
     // Remove floating buildings (must have terrain or building below)
     for row in (0..GRID_H).rev() {
         for col in 0..GRID_W {
-            if grid.get(col, row).class_id == class::BUILDING {
-                if row < GRID_H - 1 {
-                    let below = grid.get(col, row + 1).class_id;
-                    if below != class::TERRAIN && below != class::BUILDING {
-                        grid.set(col, row, EMPTY_CLASS);
-                    }
+            if grid.get(col, row).class_id == class::BUILDING
+                && row < GRID_H - 1
+            {
+                let below = grid.get(col, row + 1).class_id;
+                if below != class::TERRAIN && below != class::BUILDING {
+                    grid.set(col, row, EMPTY_CLASS);
                 }
             }
         }

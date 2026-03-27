@@ -29,7 +29,7 @@ pub fn pack_grid(tiles: &[RgbaImage], columns: u32) -> RgbaImage {
 
     let w = tiles[0].width();
     let h = tiles[0].height();
-    let rows = (tiles.len() as u32 + columns - 1) / columns;
+    let rows = (tiles.len() as u32).div_ceil(columns);
     let total_width = w * columns;
     let total_height = h * rows;
 

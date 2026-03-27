@@ -307,9 +307,9 @@ impl MediumUNet {
                 h = self.upsamples[i - 1].forward(&h)?;
             }
             h = Tensor::cat(&[&h, skip], 1)?;
-            h = r1.forward(&h, &t_emb)?;
-            h = r2.forward(&h, &t_emb)?;
-            h = r3.forward(&h, &t_emb)?;
+            h = r1.forward(&h, t_emb)?;
+            h = r2.forward(&h, t_emb)?;
+            h = r3.forward(&h, t_emb)?;
         }
 
         let h = self.gn_out.forward(&h)?;

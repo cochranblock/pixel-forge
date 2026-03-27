@@ -179,8 +179,8 @@ fn generate_turbo(prompt: &str, size: u32, count: u32) -> Result<Vec<RgbaImage>>
     let mut scheduler = sd_config.build_scheduler(NUM_STEPS)?;
     let timesteps = scheduler.timesteps().to_vec();
 
-    let latent_h = (sd_config.height / 8) as usize;
-    let latent_w = (sd_config.width / 8) as usize;
+    let latent_h = sd_config.height / 8;
+    let latent_w = sd_config.width / 8;
 
     let mut images = Vec::new();
     let t0 = std::time::Instant::now();

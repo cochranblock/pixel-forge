@@ -59,12 +59,12 @@ impl Tier {
             }
         }
         // Check next to the binary
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let exe_path = dir.join(filename);
-                if exe_path.exists() {
-                    return exe_path;
-                }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            let exe_path = dir.join(filename);
+            if exe_path.exists() {
+                return exe_path;
             }
         }
         // Fall back to bare filename (will error at load time)
@@ -206,10 +206,10 @@ fn detect_backend() -> (Backend, Device) {
     }
     #[cfg(feature = "metal")]
     {
-        if candle_core::utils::metal_is_available() {
-            if let Ok(d) = candle_core::Device::new_metal(0) {
-                return (Backend::Metal, d);
-            }
+        if candle_core::utils::metal_is_available()
+            && let Ok(d) = candle_core::Device::new_metal(0)
+        {
+            return (Backend::Metal, d);
         }
     }
     (Backend::Cpu, Device::Cpu)

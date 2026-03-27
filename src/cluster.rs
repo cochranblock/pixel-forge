@@ -277,6 +277,7 @@ pub fn cluster_generate(
         println!("  {} ({}): {} sprites via {}", w.name, w.host, w.count, w.tier);
     }
 
+    #[allow(clippy::type_complexity)]
     let results: Arc<Mutex<Vec<(usize, Vec<Vec<u8>>)>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = Vec::new();
 
@@ -285,7 +286,6 @@ pub fn cluster_generate(
         let class = class.to_string();
         let palette = palette.to_string();
         let unit = unit.clone();
-        let steps = steps;
 
         handles.push(thread::spawn(move || {
             let pngs = if unit.is_local {

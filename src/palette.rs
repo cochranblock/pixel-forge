@@ -43,7 +43,7 @@ pub fn list_palettes() {
         ("nes", 54, "Nintendo Entertainment System"),
         ("gameboy", 4, "Original Game Boy — 4 shades of green"),
     ];
-    println!("{:<14} {:>6}  {}", "NAME", "COLORS", "DESCRIPTION");
+    println!("{:<14} {:>6}  DESCRIPTION", "NAME", "COLORS");
     println!("{}", "-".repeat(60));
     for (name, count, desc) in palettes {
         println!("{:<14} {:>6}  {}", name, count, desc);

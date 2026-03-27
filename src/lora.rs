@@ -86,6 +86,7 @@ impl LoraConvAdapter {
 /// But the plan specifies ResBlock conv1/conv2 only, which is:
 /// - 3 down levels × 2 resblocks × 2 convs = 12
 /// - 2 mid blocks × 2 convs = 4
+///
 /// Total: 16 adapters.
 ///
 /// At rank 4 with 32/64 channels and 3×3 kernels:
@@ -202,7 +203,7 @@ pub fn merge_lora(base_varmap: &VarMap, lora: &LoraSet) -> Result<()> {
     for (name, delta) in &deltas {
         // Map LoRA name to base varmap key
         // e.g. "down0_r1.conv1" → look for the conv1.weight in down0_r1
-        if let Some(var) = vars.get(name.replace('.', ".").as_str()) {
+        if let Some(var) = vars.get(name.as_str()) {
             let current = var.as_tensor();
             let merged = (current + delta)?;
             var.set(&merged)?;
