@@ -167,18 +167,8 @@ fn collect_pngs(dir: &Path) -> Result<Vec<(PathBuf, RgbaImage)>> {
         return Ok(results);
     }
 
-    for entry in walkdir::WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("png"))
-                .unwrap_or(false)
-        })
+    for path in crate::walk_pngs(dir.to_str().unwrap_or(""))
     {
-        let path = entry.path().to_owned();
         match image::open(&path) {
             Ok(img) => {
                 let rgba = img.to_rgba8();

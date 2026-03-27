@@ -1107,12 +1107,7 @@ fn main() -> anyhow::Result<()> {
 
             let path = std::path::Path::new(&input);
             let files: Vec<std::path::PathBuf> = if path.is_dir() {
-                walkdir::WalkDir::new(path)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("png"))
-                    .map(|e| e.into_path())
-                    .collect()
+                pixel_forge::walk_pngs(&input)
             } else {
                 vec![path.to_path_buf()]
             };
