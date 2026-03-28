@@ -1001,6 +1001,16 @@ fn main() -> anyhow::Result<()> {
             seed,
             four_dir,
         } => {
+            if class.is_empty() {
+                anyhow::bail!("class name cannot be empty. Try: character, weapon, dragon, potion, tree");
+            }
+            if count == 0 {
+                anyhow::bail!("count must be at least 1");
+            }
+            if !std::path::Path::new(&model).exists() {
+                anyhow::bail!("model not found: {model}\n\nTo train a model:\n  pixel-forge train --data data_v2_32 --epochs 100 --img-size 32\n\nOr download a pre-trained model and place it at:\n  {model}");
+            }
+
             let cond = class_cond::lookup(&class.to_lowercase());
 
             println!("generating {count}x {size}x{size} class={class} (super={})", cond.super_id);
