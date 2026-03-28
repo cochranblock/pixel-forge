@@ -10,6 +10,27 @@
 
 ## Entries
 
+### 2026-03-27 — Hybrid Class Conditioning + Play Store Pipeline + Federal Compliance
+
+**What:** Replaced the hardcoded 16-class integer embedding system with hybrid conditioning: 10 super-categories + 12 binary tags. 108 class directories mapped via `class_cond.rs`. Stripped all legacy code paths. Trained Cinder v2 on lf (RTX 3070) and Quench v2 on gd (RTX 3050 Ti) in parallel with 75,182 tiles. Ingested 14,037 Gemini-generated sprites. Expanded GUI class picker to two-tier super-category → class browser. Set up Google Play deployment pipeline (AAB build, release signing, fastlane upload script). Shrank binary 25.8 MB → 9.2 MB via opt-level=z, LTO, strip, removing tokio/walkdir/dirs. Passed QA Round 1 + Round 2 (clean build + clippy -D warnings). Full user story analysis with scores. Added input validation (empty class, count=0, missing model). Created 11 federal governance documents (SBOM, SSDF, FIPS, CMMC, etc.). Deployed IRONHIVE C2 tmux dispatcher.
+
+**Why:** The old 16-class system couldn't scale to 108 dirs. Hybrid conditioning makes the model composable — new classes via tag combos, zero retraining. Binary shrink targets mobile APK under 10 MB. Federal govdocs prepare for government procurement.
+
+**Commits (11):**
+- `5c45b2a5` — Gemini sprite ingest pipeline + 92 generation prompts
+- `8e72544c` — hybrid class conditioning: 10 super-categories + 12 binary tags
+- `750d3d66` — update docs for hybrid class system
+- `80d2123c` — strip legacy from MediumUNet + AnvilUNet
+- `7b96936d` — strip legacy ClassConditioner from TinyUNet
+- `2115b82a` — v0.6.0: Cinder-only APK, strip Quench from mobile bundle
+- `32313817` — Play Store pipeline + 108-class GUI picker + QA cleanup
+- `a83c081e` — fix all clippy warnings (zero errors with -D warnings)
+- `a64a990b` — shrink binary 25.8→9.2 MB: strip deps + size-optimize profile
+- `c04ffe9d` — user story analysis + top 3 fixes from walkthrough
+- `4c8a473c` — federal governance docs (SBOM, SSDF, FIPS, CMMC, etc.)
+
+**AI Role:** AI implemented all code changes, training pipeline, GUI expansion, and document generation. Human directed architecture decisions (hybrid conditioning design, super-category taxonomy, binary size targets), validated training strategy, and managed IRONHIVE node deployment.
+
 ### 2026-03 — Structural Conditioning + Relight
 
 **What:** Added 5-layer structural conditioning pipeline (SDF, normals, outline, luminance, skeleton). Stage-aware cascade: silhouette to color to detail. Relight module generates 4-directional sprites from SDF + normal maps. dtype-aware UNets for f16 inference.
