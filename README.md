@@ -56,23 +56,35 @@ Generate game-ready pixel art sprites from tiny diffusion models that fit in a m
 ## Quick Start
 
 ```bash
-# Train Cinder (tiny, ~10 hrs on RTX 3070 with 75K tiles)
+# Build
+cargo build --release
+
+# Launch GUI (no model needed to explore the interface)
+cargo run --release
+
+# Generate (requires a trained model — see Training below)
+cargo run --release -- generate character --palette stardew -o hero.png
+
+# List available palettes
+cargo run --release -- palettes
+```
+
+### Training Your Own Models
+
+You need a dataset of 32x32 PNG sprites organized by class subdirectory. See `data/SOURCES.md` for CC0/CC-BY sources.
+
+```bash
+# Train Cinder (1.1M params, ~10 hrs on RTX 3070, ~6 min/epoch)
 cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32
 
-# Train Quench (medium)
+# Train Quench (5.8M params, larger/higher quality)
 cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32 --medium
-
-# Generate
-cargo run --release -- generate character --palette stardew -o hero.png
 
 # MoE cascade (Cinder drafts → Quench + Experts refines)
 cargo run --release -- cascade character --count 16 -o characters.png
 
 # Auto-detect device, pick best model
 cargo run --release -- auto character
-
-# Launch GUI
-cargo run --release
 ```
 
 ## Commands
