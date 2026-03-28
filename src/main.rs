@@ -6,6 +6,19 @@
 use pixel_forge::*;
 use clap::{Parser, Subcommand};
 
+// Federal compliance docs — baked into the binary via include_str!
+const GOVDOC_SBOM: &str = include_str!("../govdocs/SBOM.md");
+const GOVDOC_SECURITY: &str = include_str!("../govdocs/SECURITY.md");
+const GOVDOC_SSDF: &str = include_str!("../govdocs/SSDF.md");
+const GOVDOC_FIPS: &str = include_str!("../govdocs/FIPS.md");
+const GOVDOC_CMMC: &str = include_str!("../govdocs/CMMC.md");
+const GOVDOC_PRIVACY: &str = include_str!("../govdocs/PRIVACY.md");
+const GOVDOC_SUPPLY_CHAIN: &str = include_str!("../govdocs/SUPPLY_CHAIN.md");
+const GOVDOC_ACCESSIBILITY: &str = include_str!("../govdocs/ACCESSIBILITY.md");
+const GOVDOC_FEDRAMP: &str = include_str!("../govdocs/FedRAMP_NOTES.md");
+const GOVDOC_ITAR_EAR: &str = include_str!("../govdocs/ITAR_EAR.md");
+const GOVDOC_FEDERAL_USE: &str = include_str!("../govdocs/FEDERAL_USE_CASES.md");
+
 const BASE_CLASSES: &[&str] = &[
     "character", "weapon", "potion", "terrain", "enemy",
     "tree", "building", "animal", "effect", "food",
@@ -33,6 +46,9 @@ fn discover_classes(data_path: &std::path::Path) -> Vec<String> {
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
+    /// Dump machine-readable SBOM (SPDX format) and exit.
+    #[arg(long)]
+    sbom: bool,
 }
 
 #[derive(Subcommand)]
@@ -525,6 +541,11 @@ enum Cmd {
         #[arg(short, long, default_value = "data_v2_32")]
         output: String,
     },
+    /// Federal compliance docs — baked into the binary.
+    Govdocs {
+        /// Document to display: sbom, security, ssdf, fips, cmmc, privacy, supply-chain, accessibility, fedramp, itar-ear, federal-use-cases. Omit for index.
+        doc: Option<String>,
+    },
     /// Desktop generation: Anvil single-stage (needs 3+ GB VRAM).
     Anvil {
         /// Class to generate.
@@ -549,6 +570,103 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // --sbom: dump machine-readable SPDX and exit
+    if cli.sbom {
+        let v = env!("CARGO_PKG_VERSION");
+        print!("\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: pixel-forge
+DocumentNamespace: https://github.com/cochranblock/pixel-forge
+Creator: Tool: pixel-forge-{v}
+
+PackageName: pixel-forge
+PackageVersion: {v}
+PackageLicenseDeclared: Unlicense
+PackageDownloadLocation: https://github.com/cochranblock/pixel-forge
+
+## Direct Dependencies
+
+PackageName: clap
+PackageVersion: 4
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: serde
+PackageVersion: 1
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: serde_json
+PackageVersion: 1
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: anyhow
+PackageVersion: 1
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: image
+PackageVersion: 0.25
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: candle-core
+PackageVersion: 0.8
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: candle-nn
+PackageVersion: 0.8
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: candle-transformers
+PackageVersion: 0.8
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: hf-hub
+PackageVersion: 0.4
+PackageLicenseDeclared: Apache-2.0
+
+PackageName: tokenizers
+PackageVersion: 0.21
+PackageLicenseDeclared: Apache-2.0
+
+PackageName: rand
+PackageVersion: 0.8
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: bincode
+PackageVersion: 1
+PackageLicenseDeclared: MIT
+
+PackageName: zstd
+PackageVersion: 0.13
+PackageLicenseDeclared: MIT
+
+PackageName: eframe
+PackageVersion: 0.33
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: egui
+PackageVersion: 0.33
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: base64
+PackageVersion: 0.22
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: ed25519-dalek
+PackageVersion: 2
+PackageLicenseDeclared: BSD-3-Clause
+
+PackageName: sha2
+PackageVersion: 0.10
+PackageLicenseDeclared: MIT OR Apache-2.0
+
+PackageName: half
+PackageVersion: 2
+PackageLicenseDeclared: MIT OR Apache-2.0
+");
+        return Ok(());
+    }
 
     let cmd = match cli.cmd {
         Some(cmd) => cmd,
@@ -1614,6 +1732,39 @@ fn main() -> anyhow::Result<()> {
                 total += count;
             }
             println!("total: {total} tiles upscaled to 32x32");
+        }
+        Cmd::Govdocs { doc } => {
+            match doc.as_deref() {
+                Some("sbom") => print!("{GOVDOC_SBOM}"),
+                Some("security") => print!("{GOVDOC_SECURITY}"),
+                Some("ssdf") => print!("{GOVDOC_SSDF}"),
+                Some("fips") => print!("{GOVDOC_FIPS}"),
+                Some("cmmc") => print!("{GOVDOC_CMMC}"),
+                Some("privacy") => print!("{GOVDOC_PRIVACY}"),
+                Some("supply-chain") => print!("{GOVDOC_SUPPLY_CHAIN}"),
+                Some("accessibility") => print!("{GOVDOC_ACCESSIBILITY}"),
+                Some("fedramp") => print!("{GOVDOC_FEDRAMP}"),
+                Some("itar-ear") => print!("{GOVDOC_ITAR_EAR}"),
+                Some("federal-use-cases") => print!("{GOVDOC_FEDERAL_USE}"),
+                Some(other) => println!("unknown doc: {other}. Run `pixel-forge govdocs` for index."),
+                None => {
+                    println!("Pixel Forge v{} — Federal Compliance Docs", env!("CARGO_PKG_VERSION"));
+                    println!("=========================================");
+                    println!();
+                    println!("Available documents:");
+                    println!("  pixel-forge govdocs sbom              Software Bill of Materials (EO 14028)");
+                    println!("  pixel-forge govdocs security           Security posture");
+                    println!("  pixel-forge govdocs ssdf               NIST SP 800-218 mapping");
+                    println!("  pixel-forge govdocs fips               FIPS 140-2/3 status");
+                    println!("  pixel-forge govdocs cmmc               CMMC Level 1-2 practices");
+                    println!("  pixel-forge govdocs privacy            Privacy impact assessment");
+                    println!("  pixel-forge govdocs supply-chain       Supply chain integrity");
+                    println!("  pixel-forge govdocs accessibility      Section 508 / WCAG");
+                    println!("  pixel-forge govdocs fedramp            FedRAMP applicability");
+                    println!("  pixel-forge govdocs itar-ear           Export control (ITAR/EAR)");
+                    println!("  pixel-forge govdocs federal-use-cases  Federal agency use cases");
+                }
+            }
         }
         Cmd::Anvil { class, anvil, count, steps, palette: palette_name, output } => {
             let cond = class_cond::lookup(&class.to_lowercase());
