@@ -713,7 +713,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
 
 /// Default CFG guidance scale for inference.
 /// Higher = stronger class adherence, lower = more diversity.
-pub const DEFAULT_CFG_SCALE: f64 = 3.0;
+pub const DEFAULT_CFG_SCALE: f64 = 1.0;
 
 /// Create seeded noise tensor. Same seed + class + index = same sprite every time.
 /// Inspired by No Man's Sky / Factorio deterministic world generation:
@@ -948,32 +948,20 @@ pub fn sample_seeded(
     let n = count as usize;
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
 
-    // Try loading skeleton for this class
-    let class_id = cond.super_id; // use super_id for skeleton lookup
-    let skeleton = load_skeleton("data", class_id, img_size, &device)
-        .or_else(|| load_skeleton("data_v2_32", class_id, img_size, &device));
-    let use_skeleton = skeleton.is_some();
-    if use_skeleton { println!("  using skeleton (70/30 blend)"); }
+    // Skeleton seeding disabled — old skeletons use legacy class IDs, not super-categories.
+    // TODO: recompute skeletons keyed by (super_id, class_name) for hybrid system.
 
     if let Some(s) = seed {
         println!("  seed: {s}");
     }
 
-    // Build initial noise for each sprite, then stack into (count, 3, H, W)
+    let class_id = cond.super_id;
     let init_tensors: Vec<Tensor> = (0..count)
-        .map(|i| {
-            let single = if let Some(ref skel) = skeleton {
-                skeleton_start(skel, seed, class_id, i, img_size, &device)
-            } else {
-                seeded_noise(seed, class_id, i, img_size, &device)
-            };
-            single.and_then(|t| t.squeeze(0)) // (1,3,H,W) -> (3,H,W)
-        })
+        .map(|i| seeded_noise(seed, class_id, i, img_size, &device).and_then(|t| t.squeeze(0)))
         .collect::<candle_core::Result<Vec<_>>>()?;
-    let mut x = Tensor::stack(&init_tensors, 0)?; // (count, 3, H, W)
+    let mut x = Tensor::stack(&init_tensors, 0)?;
 
-    // When using skeleton, scale the schedule so step 0 starts at SKELETON_NOISE
-    let max_noise: f32 = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+    let max_noise: f32 = 1.0;
 
     for step in 0..steps {
         // Cosine schedule matching training
@@ -1053,28 +1041,17 @@ pub fn sample_medium_seeded(
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
 
     let class_id = cond.super_id;
-    let skeleton = load_skeleton("data", class_id, img_size, &device)
-        .or_else(|| load_skeleton("data_v2_32", class_id, img_size, &device));
-    let use_skeleton = skeleton.is_some();
-    if use_skeleton { println!("  using skeleton (70/30 blend)"); }
 
     if let Some(s) = seed {
         println!("  seed: {s}");
     }
 
     let init_tensors: Vec<Tensor> = (0..count)
-        .map(|i| {
-            let single = if let Some(ref skel) = skeleton {
-                skeleton_start(skel, seed, class_id, i, img_size, &device)
-            } else {
-                seeded_noise(seed, class_id, i, img_size, &device)
-            };
-            single.and_then(|t| t.squeeze(0))
-        })
+        .map(|i| seeded_noise(seed, class_id, i, img_size, &device).and_then(|t| t.squeeze(0)))
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?;
 
-    let max_noise: f32 = if use_skeleton { SKELETON_NOISE } else { 1.0 };
+    let max_noise: f32 = 1.0;
 
     for step in 0..steps {
         let t_frac = 1.0 - (step as f32 / steps as f32);
