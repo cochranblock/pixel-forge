@@ -1,2 +1,6 @@
 /data/dataset.bin.zst filter=lfs diff=lfs merge=lfs -text
 /assets/pixel-forge-logo.png filter=lfs diff=lfs merge=lfs -text
+/release/pixel-forge-android.aab filter=lfs diff=lfs merge=lfs -text
+/release/pixel-forge-linux-x86_64 filter=lfs diff=lfs merge=lfs -text
+/release/pixel-forge-macos-arm64 filter=lfs diff=lfs merge=lfs -text
+/release/pixel-forge-macos-x86_64 filter=lfs diff=lfs merge=lfs -text

@@ -170,6 +170,19 @@ See [data/SOURCES.md](data/SOURCES.md) for full attribution.
 | nes | 54 | Nintendo Entertainment System |
 | gameboy | 4 | Original Game Boy |
 
+## Supported Platforms
+
+| Platform | Binary | Size | GPU |
+|----------|--------|------|-----|
+| macOS ARM (M1/M2/M3) | `pixel-forge-macos-arm64` | 9.2 MB | Metal |
+| macOS Intel | `pixel-forge-macos-x86_64` | 7.6 MB | CPU |
+| Linux x86_64 | `pixel-forge-linux-x86_64` | 11.3 MB | CUDA / CPU |
+| Android ARM64 | `pixel-forge-android.aab` | 9.8 MB | CPU |
+| iOS ARM64 | `pixel-forge-ios` (source) | — | Metal |
+| Web (PWA) | `pixel-forge.wasm` | planned | CPU |
+
+Download from [Releases](https://github.com/cochranblock/pixel-forge/releases).
+
 ## Tech Stack
 
 | Layer | Tool |
