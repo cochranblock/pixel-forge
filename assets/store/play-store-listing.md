@@ -32,14 +32,17 @@ SPRITE CATEGORIES:
 - UI/FX: icons, frames, combat effects, ambient particles
 
 HOW IT WORKS:
-Pixel Forge uses a tiny diffusion model (4.2 MB) trained on 75,000+ curated pixel art tiles from CC0/CC-BY sources. The AI runs a denoising process directly on your phone's processor. Every sprite is unique, generated fresh each time.
+Two AI models work together — a fast draft model and a detail refinement model combine to generate pixel art sprites in seconds. The MoE cascade runs entirely on your phone: Quench lays the foundation, Cinder adds detail. Every sprite is unique, generated fresh each time.
 
-The model uses hybrid conditioning: a super-category embedding tells it "this is a weapon" while binary trait tags specify "held item, magical, small." New combinations work without retraining.
+The models use hybrid conditioning: a super-category embedding tells it "this is a weapon" while binary trait tags specify "held item, magical, small." New combinations work without retraining.
 
 Built with Candle ML in Rust. No Python. No TensorFlow. Pure native ARM64.
 
+COMMUNITY GALLERY:
+Opt in to share your best sprites. Swipe right on a sprite you like and it gets saved for the community gallery at cochranblock.org. Your handle, class, and palette are attached — nothing else. Sharing is off by default.
+
 PRIVACY:
-Zero data collection. Zero network calls. Zero tracking. Works in airplane mode. Your sprites stay on your device. No permissions required.
+Zero data collection. Zero network calls. Zero tracking. Works in airplane mode. Your sprites stay on your device. No permissions required. Community sharing is opt-in only.
 
 BUILT FOR GAME DEVELOPERS:
 Export sprites as 32x32 PNG. Use them in your game engine (Godot, Unity, Bevy, whatever). All generated art is yours. No license restrictions on output.

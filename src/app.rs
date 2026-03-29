@@ -85,6 +85,10 @@ pub struct PixelForgeApp {
     swipe_texture: Option<egui::TextureHandle>,
     reviewing: bool,            // true = in swipe mode
     lora_training: Arc<Mutex<bool>>,
+    // Community upload
+    community_upload: bool,
+    community_handle: String,
+    community_status: String,
 }
 
 impl Default for PixelForgeApp {
@@ -121,6 +125,9 @@ impl Default for PixelForgeApp {
             swipe_texture: None,
             reviewing: false,
             lora_training: Arc::new(Mutex::new(false)),
+            community_upload: false,
+            community_handle: "anonymous".to_string(),
+            community_status: String::new(),
         }
     }
 }
@@ -496,6 +503,35 @@ impl eframe::App for PixelForgeApp {
                 }
             }
 
+            ui.add_space(8.0);
+
+            // Community settings
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                section_label(ui, "COMMUNITY");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.community_upload, "");
+                    ui.label(egui::RichText::new("Share good sprites").size(12.0).color(TEXT_BRIGHT));
+                });
+                if self.community_upload {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("handle").size(12.0).color(TEXT_DIM));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.community_handle)
+                                .desired_width(140.0)
+                                .font(egui::TextStyle::Body)
+                                .text_color(TEXT_BRIGHT)
+                        );
+                    });
+                    ui.label(egui::RichText::new(
+                        "approved sprites saved to ~/.pixel-forge/community/"
+                    ).size(10.0).color(TEXT_DIM));
+                    if !self.community_status.is_empty() {
+                        ui.label(egui::RichText::new(&self.community_status).size(10.0).color(ACCENT));
+                    }
+                }
+            });
+
             ui.add_space(16.0);
 
             // Generate button — big, prominent
@@ -684,6 +720,16 @@ impl eframe::App for PixelForgeApp {
                                 .min_size(egui::vec2(120.0, 50.0));
                             if ui.add(good_btn).clicked() {
                                 self.swipe_store.record(pixels_f32.clone(), true, class_id);
+                                // Community save
+                                if self.community_upload {
+                                    self.community_status = save_community_sprite(
+                                        &pixels_f32,
+                                        class_id,
+                                        &self.selected_class,
+                                        &self.selected_palette,
+                                        &self.community_handle,
+                                    );
+                                }
                                 self.swipe_index += 1;
                                 self.swipe_texture = None;
                             }
@@ -940,6 +986,62 @@ fn cluster_generate_for_display(
     let pixels = sheet.into_raw();
 
     Ok((pixels, w, h, 1))
+}
+
+/// Save an approved sprite + metadata to ~/.pixel-forge/community/ for later upload.
+fn save_community_sprite(
+    pixels_f32: &[f32],
+    class_id: u32,
+    class_name: &str,
+    palette_idx: &usize,
+    handle: &str,
+) -> String {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let dir = std::path::PathBuf::from(&home).join(".pixel-forge").join("community");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return format!("error: {e}");
+    }
+
+    let base = format!("{}_{}", class_name, ts);
+
+    // Save PNG (16x16 from channel-first f32)
+    let size = 16usize;
+    let mut rgba = vec![0u8; size * size * 4];
+    for i in 0..size * size {
+        let r = (pixels_f32[i].clamp(0.0, 1.0) * 255.0) as u8;
+        let g = (pixels_f32[size * size + i].clamp(0.0, 1.0) * 255.0) as u8;
+        let b = (pixels_f32[2 * size * size + i].clamp(0.0, 1.0) * 255.0) as u8;
+        rgba[i * 4] = r;
+        rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = b;
+        rgba[i * 4 + 3] = 255;
+    }
+
+    let png_path = dir.join(format!("{}.png", base));
+    let img = image::RgbaImage::from_raw(size as u32, size as u32, rgba);
+    if let Some(img) = img {
+        if let Err(e) = img.save(&png_path) {
+            return format!("error: {e}");
+        }
+    }
+
+    // Save metadata JSON
+    let palette_name = PALETTE_NAMES.get(*palette_idx).unwrap_or(&"unknown");
+    let json = format!(
+        "{{\"class\":\"{}\",\"class_id\":{},\"palette\":\"{}\",\"handle\":\"{}\",\"timestamp\":{}}}",
+        class_name, class_id, palette_name, handle, ts
+    );
+    let json_path = dir.join(format!("{}.json", base));
+    if let Err(e) = std::fs::write(&json_path, &json) {
+        return format!("error: {e}");
+    }
+
+    "saved for community".to_string()
 }
 
 /// Launch the app. Called when no CLI args are given.
