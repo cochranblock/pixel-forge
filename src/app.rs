@@ -1043,10 +1043,10 @@ fn save_community_sprite(
 
     let png_path = dir.join(format!("{}.png", base));
     let img = image::RgbaImage::from_raw(size as u32, size as u32, rgba);
-    if let Some(img) = img {
-        if let Err(e) = img.save(&png_path) {
-            return format!("error: {e}");
-        }
+    if let Some(img) = img
+        && let Err(e) = img.save(&png_path)
+    {
+        return format!("error: {e}");
     }
 
     // Save metadata JSON
