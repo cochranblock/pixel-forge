@@ -132,6 +132,15 @@ impl Default for PixelForgeApp {
     }
 }
 
+/// Check if a safetensors file contains hybrid conditioning (super_emb.weight).
+fn is_hybrid_model(path: &std::path::Path) -> bool {
+    let Ok(data) = std::fs::read(path) else { return false };
+    if data.len() < 8 { return false; }
+    let hlen = u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8])) as usize;
+    let header = std::str::from_utf8(data.get(8..8 + hlen).unwrap_or(&[])).unwrap_or("");
+    header.contains("super_emb.weight")
+}
+
 impl PixelForgeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self::default();
@@ -140,6 +149,13 @@ impl PixelForgeApp {
         match device_cap::auto_select() {
             Ok(p) => app.profile = Some(p),
             Err(e) => app.profile_error = Some(format!("{e}")),
+        }
+
+        // Validate models are hybrid — fall back to Cinder if Quench is legacy
+        let quench_path = device_cap::Tier::Quench.model_path();
+        if quench_path.exists() && !is_hybrid_model(&quench_path) {
+            eprintln!("quench model is legacy (no super_emb) — cascade disabled, using cinder-only");
+            app.gen_mode = GenMode::Cinder;
         }
 
         // Probe cluster in background — desktop only (SSH probes fail on mobile)
@@ -197,11 +213,11 @@ impl PixelForgeApp {
                     GenMode::Cascade | GenMode::Quench => {
                         let quench_path = device_cap::Tier::Quench.model_path();
                         let cinder_path = device_cap::Tier::Cinder.model_path();
-                        if mode == GenMode::Cascade && quench_path.exists() && cinder_path.exists() {
+                        if quench_path.exists() && cinder_path.exists() {
                             cascade_for_display(&cond, count, steps, &palette_name)
-                        } else if quench_path.exists() {
-                            generate_for_display(device_cap::Tier::Quench, &cond, count, steps, &palette_name)
                         } else {
+                            // Quench not available — fall back to Cinder-only
+                            eprintln!("quench model not found, falling back to cinder-only");
                             generate_for_display(device_cap::Tier::Cinder, &cond, count, steps, &palette_name)
                         }
                     }
@@ -439,7 +455,7 @@ impl eframe::App for PixelForgeApp {
                     ui.set_width(ui.available_width());
                     section_label(ui, "MODEL");
                     ui.horizontal(|ui| {
-                        for mode in [GenMode::Cinder, GenMode::Quench, GenMode::Cascade, GenMode::Anvil] {
+                        for mode in [GenMode::Cascade, GenMode::Cinder] {
                             let selected = self.gen_mode == mode;
                             if styled_button(ui, mode.label(), selected, egui::vec2(80.0, 32.0)) {
                                 self.gen_mode = mode;
@@ -470,10 +486,10 @@ impl eframe::App for PixelForgeApp {
 
                 ui.add_space(4.0);
 
-                // Device info (was at top, now in advanced)
+                // Device info — show tier only (RAM misleading on emulators)
                 if let Some(ref profile) = self.profile {
                     ui.vertical_centered(|ui| {
-                        let chip = format!("{} | {} MB | {}", profile.backend, profile.ram_mb, profile.tier);
+                        let chip = format!("{} | model: {}", profile.backend, profile.tier);
                         ui.label(egui::RichText::new(chip).size(10.0).color(TEXT_DIM));
                     });
                 }
@@ -780,9 +796,12 @@ impl eframe::App for PixelForgeApp {
 
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("cochranblock.org").size(10.0).color(
-                    egui::Color32::from_rgb(80, 80, 100)
-                ));
+                ui.hyperlink_to(
+                    egui::RichText::new("cochranblock.org").size(10.0).color(
+                        egui::Color32::from_rgb(80, 80, 100)
+                    ),
+                    "https://cochranblock.org",
+                );
             });
 
             }); // ScrollArea
