@@ -761,6 +761,7 @@ pub fn eps_to_clean(x: &Tensor, pred_eps: &Tensor, amount: f32) -> candle_core::
     (x - (pred_eps * amount as f64)?)? * (1.0 / one_minus_a)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cfg_denoise(
     model: &dyn DiffusionModel,
     x: &Tensor,

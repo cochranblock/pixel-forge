@@ -10,6 +10,14 @@
 
 ## Entries
 
+### 2026-03-29/30 — Diffusion Debug + Gaussian Noise Fix + Multi-Arch Release
+
+**What:** Debugged fundamental output quality issue — model producing blobs instead of pixel art. Root cause analysis: uniform [0,1] noise made signal/noise indistinguishable (same value range). Fixed: switched to Gaussian N(0,1) noise. Tested epsilon prediction (standard DDPM approach) — caused numerical instability with flow-matching corruption formula, reverted to clean prediction. Dataset rebalanced from 75K skewed (terrain/misc dominated) to 20K balanced across 68 classes. Cinder v6 training with Gaussian noise + batch 128 + lr 2e-4 shows improved structure at epoch 100. Multi-arch release: macOS ARM (9.2 MB), macOS Intel (7.6 MB), Linux x86 (11.3 MB), Android AAB (30.5 MB). iOS scaffold + PWA scaffold created. Mobile GUI fixes: removed Anvil, cascade default, hybrid model validation, clickable footer. Community sprite upload (opt-in, local save). Feature graphic generated. Store screenshots captured on Pixel 9 Pro XL emulator.
+
+**Commits (14):** `b84b5b8b`→`541720cd`
+
+**AI Role:** AI performed systematic architecture debug (overfit test, noise analysis, tensor stats), identified uniform noise as root cause. Human directed the investigation priorities and training configuration.
+
 ### 2026-03-27 — Hybrid Class Conditioning + Play Store Pipeline + Federal Compliance
 
 **What:** Replaced the hardcoded 16-class integer embedding system with hybrid conditioning: 10 super-categories + 12 binary tags. 108 class directories mapped via `class_cond.rs`. Stripped all legacy code paths. Trained Cinder v2 on lf (RTX 3070) and Quench v2 on gd (RTX 3050 Ti) in parallel with 75,182 tiles. Ingested 14,037 Gemini-generated sprites. Expanded GUI class picker to two-tier super-category → class browser. Set up Google Play deployment pipeline (AAB build, release signing, fastlane upload script). Shrank binary 25.8 MB → 9.2 MB via opt-level=z, LTO, strip, removing tokio/walkdir/dirs. Passed QA Round 1 + Round 2 (clean build + clippy -D warnings). Full user story analysis with scores. Added input validation (empty class, count=0, missing model). Created 11 federal governance documents (SBOM, SSDF, FIPS, CMMC, etc.). Deployed IRONHIVE C2 tmux dispatcher.

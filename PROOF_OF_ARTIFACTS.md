@@ -32,7 +32,7 @@ flowchart TD
 
 | Metric | Value |
 |--------|-------|
-| Lines of Rust | 11,042 across 30 modules |
+| Lines of Rust | 11,313 across 30 modules |
 | Public functions | 168 across all modules |
 | Direct dependencies | 19 (16 required + 3 optional) |
 | Binary size (desktop) | 9.2 MB (opt-level=z, LTO, strip) |
