@@ -596,12 +596,15 @@ fn train_inner(
 
             let pred = model.forward(&model_input, &noise_amount, &super_batch, &tags_batch)?;
 
-            // V-prediction: target = noise - clean (direction from clean to noise)
-            // Clean-prediction: target = clean image
+            // Prediction target:
+            // - epsilon: predict the noise that was added (standard DDPM)
+            // - v-pred: predict velocity = noise - clean
+            // - clean: predict the clean image directly (legacy)
             let target = if config.v_prediction {
                 (&noise - &x_batch)?
             } else {
-                x_batch.clone()
+                // Epsilon prediction: target = noise (model learns to predict noise)
+                noise.clone()
             };
             let per_sample_loss = (&pred - &target)?.sqr()?;
 
@@ -746,6 +749,12 @@ fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, dev
 /// blend predictions to amplify class signal.
 /// For v-pred models, converts v→clean before CFG blend to avoid amplifying velocity.
 #[allow(clippy::too_many_arguments)]
+/// Convert epsilon prediction to clean image: clean = (x - eps * t) / (1 - t)
+pub fn eps_to_clean(x: &Tensor, pred_eps: &Tensor, amount: f32) -> candle_core::Result<Tensor> {
+    let one_minus_a = (1.0 - amount as f64).max(1e-6);
+    (x - (pred_eps * amount as f64)?)? * (1.0 / one_minus_a)
+}
+
 pub fn cfg_denoise(
     model: &dyn DiffusionModel,
     x: &Tensor,
@@ -984,12 +993,13 @@ pub fn sample_seeded(
         let pred_clean = if is_v_pred {
             cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         } else {
-            cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
+            let pred_eps = cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?;
+            eps_to_clean(&x, &pred_eps, amount)?
         };
 
         if next_amount > 1e-6 {
-            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
-            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            let pred_noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&pred_noise * next_amount as f64)?)?;
         } else {
             x = pred_clean;
         }
@@ -1073,12 +1083,13 @@ pub fn sample_medium_seeded(
         let pred_clean = if is_v_pred {
             cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
         } else {
-            cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
+            let pred_eps = cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?;
+            eps_to_clean(&x, &pred_eps, amount)?
         };
 
         if next_amount > 1e-6 {
-            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
-            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+            let pred_noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&pred_noise * next_amount as f64)?)?;
         } else {
             x = pred_clean;
         }
@@ -1135,12 +1146,13 @@ pub fn sample_anvil(
             let pred_clean = if is_v_pred {
                 cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
             } else {
-                cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
+                let pred_eps = cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?;
+                eps_to_clean(&x, &pred_eps, amount)?
             };
 
             if next_amount > 1e-6 {
-                let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
-                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
+                let pred_noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&pred_noise * next_amount as f64)?)?;
             } else {
                 x = pred_clean;
             }
