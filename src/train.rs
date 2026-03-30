@@ -404,9 +404,10 @@ fn hflip(px: &mut [f32], img_size: u32) {
 }
 
 /// Corrupt: x_noisy = x * (1 - amount) + noise * amount
-/// Returns (noisy, noise) so v-prediction can compute targets.
+/// Uses Gaussian N(0,1) noise — signal in [0,1], noise centered at 0.
+/// This gives the model amplitude cues to separate signal from noise.
 fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<(Tensor, Tensor)> {
-    let noise = Tensor::rand(0f32, 1f32, x.shape(), device)?.to_dtype(x.dtype())?;
+    let noise = Tensor::randn(0f32, 1f32, x.shape(), device)?.to_dtype(x.dtype())?;
     let a = amount.unsqueeze(1)?.unsqueeze(2)?.unsqueeze(3)?;
     let one_minus_a = a.ones_like()?.broadcast_sub(&a)?;
     let noisy = (x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?)?;
@@ -724,14 +725,19 @@ fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, dev
 
     match seed {
         Some(s) => {
-            // Hash seed + class + index for unique but deterministic noise
+            // Hash seed + class + index for unique but deterministic Gaussian noise
             let combined = s.wrapping_mul(2654435761) ^ (class_id as u64).wrapping_mul(40503) ^ (index as u64).wrapping_mul(65537);
             let mut rng = rand::rngs::StdRng::seed_from_u64(combined);
-            let vals: Vec<f32> = (0..3 * n * n).map(|_| rng.r#gen::<f32>()).collect();
+            // Box-Muller transform for Gaussian samples
+            let vals: Vec<f32> = (0..3 * n * n).map(|_| {
+                let u1: f32 = rng.r#gen::<f32>().max(1e-7);
+                let u2: f32 = rng.r#gen::<f32>();
+                (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
+            }).collect();
             Tensor::from_vec(vals, (1, 3, n, n), device)
         }
         None => {
-            Tensor::rand(0f32, 1f32, (1, 3, n, n), device)
+            Tensor::randn(0f32, 1f32, (1, 3, n, n), device)
         }
     }
 }
