@@ -32,24 +32,32 @@ flowchart TD
 
 | Metric | Value |
 |--------|-------|
-| Lines of Rust | 11,313 across 30 modules |
-| Public functions | 168 across all modules |
-| Direct dependencies | 19 (16 required + 3 optional) |
-| Binary size (desktop) | 9.2 MB (opt-level=z, LTO, strip) |
-| Binary size (before) | 25.8 MB (default release profile) |
-| Model: Cinder v2 | 1.09M params, 4.2 MB, hybrid conditioning |
-| Model: Quench v2 | 5.83M params, 22 MB, hybrid conditioning |
-| Model: Anvil | 16.9M params, 64 MB |
-| MoE cascade | Cinder + Quench + 4 experts = under 30 MB |
-| Judge model | 16K params — quality gate in microseconds |
-| Training data | 75,182 curated sprites from 7 CC0/CC-BY + Gemini sources |
+| Lines of Rust | 11,322 across 30 modules |
+| Public functions | 170+ across all modules |
+| Direct dependencies | 16 required + 3 optional |
+| Binary size (desktop ARM) | 9.2 MB (opt-level=z, LTO, strip) |
+| Binary size (desktop x86) | 7.6 MB |
+| Binary size (Linux) | 11.3 MB |
+| Model: Cinder v6 | 1.09M params, 4.2 MB, Gaussian noise, clean prediction |
+| Model: Quench v6 | 5.83M params, 22.2 MB, training on gd (RTX 3050 Ti) |
+| Model: Anvil v6 | 16.9M params, 64.5 MB, training on lf (RTX 3070) |
+| Training data | 19,876 balanced tiles (capped 2K/class), 68 active classes |
 | Class directories | 108 across 10 super-categories |
-| Dataset size | 73 MB zstd-compressed bincode (RAM-loaded, zero disk I/O) |
-| Android AAB | 30 MB (Cinder-only bundle) |
-| Android APK | ~20 MB estimated (Cinder-only, post size-optimize) |
+| Dataset size | 24 MB zstd-compressed bincode (RAM-loaded, zero disk I/O) |
+| Android AAB | 30.5 MB (Cinder + Quench for cascade) |
 | Sprite classes | 108 via hybrid conditioning (10 supers + 12 tags) |
 | ML framework | Candle (pure Rust — Metal, CUDA, CPU) |
-| Federal govdocs | 11 documents (SBOM, SSDF, FIPS, CMMC, etc.) |
+| Federal govdocs | 11 documents baked into binary |
+| Noise type | Gaussian N(0,1) — fixed from uniform [0,1] |
+| Prediction target | Clean image (epsilon prediction tested, reverted) |
+
+## Training Loss Progress (v6, Gaussian noise)
+
+| Model | Epoch 1 | Epoch 6 | Epoch 25 | Epoch 50 | Epoch 100 |
+|-------|---------|---------|----------|----------|-----------|
+| Cinder (batch 128, lr 2e-4) | 0.64 | 0.13 | 0.10 | 0.09 | 0.08 |
+| Anvil (batch 16, lr 2e-4) | 0.19 | 0.08 | training | — | — |
+| Quench (batch 16, lr 2e-4) | 0.22 | training | — | — | — |
 
 ## QA Results (2026-03-27)
 

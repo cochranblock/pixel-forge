@@ -16,22 +16,23 @@
 
 # Pixel Forge v0.6.0
 
-**Free pixel art generator. Three AI models. First MoE diffusion under 30MB. Pure Rust.**
+**Free pixel art generator. Three AI models. 108 classes. Gaussian diffusion. Pure Rust.**
 
-Generate game-ready pixel art sprites from tiny diffusion models that fit in a mobile binary. No cloud. No Python. No subscription. One language.
+Generate pixel art sprites from diffusion models that run on your phone. No cloud. No Python. No subscription.
 
 ## What It Does
 
-- **Generate** pixel art sprites from 108 class dirs via hybrid conditioning (10 super-categories + 12 binary tags)
-- **Train** your own models on curated artist-made pixel art datasets
-- **Three tiers** — Cinder (4.2 MB, fast), Quench (22 MB, balanced), Anvil (64 MB, highest quality)
-- **f16 quantization** — halve model size for mobile (Cinder: 2.1 MB, Quench: 11 MB)
-- **MoE cascade** — Cinder drafts, Quench + 4 expert heads refine. Better than either alone.
-- **Judge model** — binary quality classifier filters bad sprites automatically
-- **LoRA adapters** — fine-tune from user feedback without retraining
-- **Scene generation** — 8x8 biome grids with rule-based or model-based placement
-- **Cluster distribution** — fan out generation across GPU nodes
-- **GUI + Android app** — touch-friendly, device auto-detection, Cinder-only APK under 10 MB
+- **108 sprite classes** via hybrid conditioning (10 super-categories + 12 binary tags)
+- **Three model tiers** — Cinder (1.1M/4.2 MB), Quench (5.8M/22 MB), Anvil (16.9M/64 MB)
+- **Anvil is the v1 shipping model** — 16.9M params, trained on balanced 20K dataset with Gaussian noise
+- **f16 quantization** — halve model size for mobile (Anvil: 32 MB f16)
+- **MoE cascade** — Cinder drafts, Quench refines (designed, Anvil standalone is primary)
+- **Per-epoch checkpoints** — `--checkpoint-every 1` for live testing during training
+- **7 color palettes** — stardew, starbound, snes, nes, gameboy, pico8, endesga
+- **Android APK** — Play Store ready (AAB signed, 30 MB with Cinder+Quench)
+- **Community sprite bucket** — opt-in sharing of good sprites (local save, upload planned)
+- **GUI + CLI** — touch-friendly egui, 108-class two-tier picker
+- **Federal compliance** — 11 govdocs baked into binary (`pixel-forge govdocs`, `--sbom`)
 
 ## Architecture
 
@@ -69,23 +70,34 @@ cargo run --release -- generate character --palette stardew -o hero.png
 cargo run --release -- palettes
 ```
 
-### Training Your Own Models
+### Training
 
-You need a dataset of 32x32 PNG sprites organized by class subdirectory. See `data/SOURCES.md` for CC0/CC-BY sources.
+Dataset: 20K balanced tiles in `data_v3_32/` (capped 2K/class). See `data/SOURCES.md`.
 
 ```bash
-# Train Cinder (1.1M params, ~10 hrs on RTX 3070, ~6 min/epoch)
-cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32
+# Train Anvil (16.9M params, ~12 min/epoch on RTX 3070, ~42 hrs for 200 epochs)
+cargo run --release -- train --data data_v3_32 --anvil --epochs 200 --img-size 32 \
+  --lr 2e-4 --warmup 10 --batch-size 16 --no-ema --checkpoint-every 1
 
-# Train Quench (5.8M params, larger/higher quality)
-cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32 --medium
+# Train Quench (5.8M params, ~10 min/epoch on RTX 3050 Ti)
+cargo run --release -- train --data data_v3_32 --medium --epochs 200 --img-size 32 \
+  --lr 2e-4 --warmup 10 --batch-size 16 --no-ema --checkpoint-every 1
 
-# MoE cascade (Cinder drafts → Quench + Experts refines)
-cargo run --release -- cascade character --count 16 -o characters.png
+# Train Cinder (1.1M params, ~1.5 min/epoch, fast iteration)
+cargo run --release -- train --data data_v3_32 --epochs 500 --img-size 32 \
+  --lr 2e-4 --warmup 10 --batch-size 128 --no-ema
 
-# Auto-detect device, pick best model
-cargo run --release -- auto character
+# Generate with Anvil
+cargo run --release -- anvil character --count 4 --steps 40 --palette stardew
 ```
+
+### What We Learned (Bug Story)
+
+The diffusion models produced blobs for weeks. Debug revealed two root causes:
+1. **Uniform [0,1] noise** — signal and noise occupied the same range, giving the model no amplitude cue to denoise. Fixed: Gaussian N(0,1) noise.
+2. **CFG scale 3.0** — classifier-free guidance inverted outputs for most classes (unconditional predicted brighter than conditioned). Fixed: CFG disabled (scale=1.0).
+
+Epsilon prediction (standard DDPM) was tested but caused numerical instability with the flow-matching corruption formula. Clean prediction with Gaussian noise is the working configuration.
 
 ## Commands
 
@@ -139,10 +151,11 @@ cargo run --release -- auto character
 
 ## Training Pipeline
 
-- **75,182 curated tiles** from 7 CC0/CC-BY sources + Gemini-generated sprites across 108 class dirs
-- No AI-generated images. No copyrighted game rips.
-- Cosine noise schedule + min-SNR weighting + CFG dropout (10%) + EMA tracking
-- Zero disk I/O during training — all data in RAM from bincode+zstd cache
+- **19,876 balanced tiles** (capped 2K/class) from 7 CC0/CC-BY sources + Gemini sprites
+- **Gaussian N(0,1) noise** — clean prediction target
+- Cosine noise schedule + min-SNR weighting (gamma=5) + CFG dropout (10%)
+- Per-epoch checkpoints (`--checkpoint-every 1`) for live testing
+- Zero disk I/O — all data in RAM from bincode+zstd cache (24 MB compressed)
 
 See [data/SOURCES.md](data/SOURCES.md) for full attribution.
 
@@ -194,7 +207,17 @@ Download from [Releases](https://github.com/cochranblock/pixel-forge/releases).
 | CLI | clap |
 | GPU Scheduling | kova c2 gpu (file-based lock + priority queue) |
 
-Zero Python. Zero JavaScript. One language. 11,137 lines of Rust.
+Zero Python. Zero JavaScript. One language. 11,322 lines of Rust.
+
+## Federal Compliance
+
+11 governance documents baked into the binary:
+```bash
+pixel-forge govdocs              # list all compliance docs
+pixel-forge govdocs sbom         # Software Bill of Materials
+pixel-forge govdocs security     # security posture
+pixel-forge --sbom               # machine-readable SPDX format
+```
 
 ## Attribution
 

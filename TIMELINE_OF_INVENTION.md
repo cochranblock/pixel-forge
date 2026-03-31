@@ -10,9 +10,9 @@
 
 ## Entries
 
-### 2026-03-29/30 — Diffusion Debug + Gaussian Noise Fix + Multi-Arch Release
+### 2026-03-28/29/30 — Diffusion Debug + Gaussian Noise Fix + Anvil Training + Multi-Arch
 
-**What:** Debugged fundamental output quality issue — model producing blobs instead of pixel art. Root cause analysis: uniform [0,1] noise made signal/noise indistinguishable (same value range). Fixed: switched to Gaussian N(0,1) noise. Tested epsilon prediction (standard DDPM approach) — caused numerical instability with flow-matching corruption formula, reverted to clean prediction. Dataset rebalanced from 75K skewed (terrain/misc dominated) to 20K balanced across 68 classes. Cinder v6 training with Gaussian noise + batch 128 + lr 2e-4 shows improved structure at epoch 100. Multi-arch release: macOS ARM (9.2 MB), macOS Intel (7.6 MB), Linux x86 (11.3 MB), Android AAB (30.5 MB). iOS scaffold + PWA scaffold created. Mobile GUI fixes: removed Anvil, cascade default, hybrid model validation, clickable footer. Community sprite upload (opt-in, local save). Feature graphic generated. Store screenshots captured on Pixel 9 Pro XL emulator.
+**What:** Debugged fundamental output quality issue. Root cause: uniform [0,1] noise made signal/noise indistinguishable. Fixed: Gaussian N(0,1). Tested epsilon prediction — numerical instability with flow-matching, reverted to clean prediction. Dataset rebalanced 75K→20K (capped 2K/class). Added `--checkpoint-every` flag for per-epoch saves. Anvil v6 (16.9M params) training on RTX 3070 — loss 0.08 at epoch 6, already showing structured output. Quench v6 on RTX 3050 Ti in parallel. Multi-arch release: macOS ARM/Intel, Linux x86, Android AAB. iOS scaffold + PWA scaffold. Mobile GUI: removed Anvil button, cascade default, hybrid model validation, clickable footer. Community sprite upload. Feature graphic. Store screenshots on Pixel 9 Pro XL.
 
 **Commits (14):** `b84b5b8b`→`541720cd`
 

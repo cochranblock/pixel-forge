@@ -11,12 +11,13 @@ Part of the Cochran Block ecosystem. Powered by KOVA. Human direction, AI execut
 | Build (Metal) | `cargo build --release -p pixel-forge` |
 | Build (CUDA) | `cargo build --release -p pixel-forge --features cuda --no-default-features` |
 | Build (CPU) | `cargo build --release -p pixel-forge --no-default-features` |
-| Train Cinder | `cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32` |
-| Train Quench | `cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32 --medium` |
-| Train Anvil | `cargo run --release -- train --data data_v2_32 --epochs 100 --img-size 32 --xl` |
+| Train Anvil | `cargo run --release -- train --data data_v3_32 --anvil --epochs 200 --lr 2e-4 --batch-size 16 --no-ema --checkpoint-every 1` |
+| Train Quench | `cargo run --release -- train --data data_v3_32 --medium --epochs 200 --lr 2e-4 --batch-size 16 --no-ema --checkpoint-every 1` |
+| Train Cinder | `cargo run --release -- train --data data_v3_32 --epochs 500 --lr 2e-4 --batch-size 128 --no-ema` |
 | Train Experts | `cargo run --release -- train-experts --data data --epochs 50` |
 | Train Judge | `cargo run --release -- train-judge` |
-| Generate | `cargo run --release -- generate character --palette stardew` |
+| Generate (Anvil) | `cargo run --release -- anvil character --count 4 --steps 40 --palette stardew` |
+| Generate (Cinder) | `cargo run --release -- generate character --palette stardew` |
 | Cascade (MoE) | `cargo run --release -- cascade character --count 16` |
 | Auto-detect | `cargo run --release -- auto character` |
 | Scene | `cargo run --release -- scene biome` |
