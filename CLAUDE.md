@@ -104,10 +104,11 @@ Hybrid system replacing the old 16-class integer embeddings:
 
 ## Training Data
 
-- 75,182 curated tiles from 7 CC0/CC-BY sources + Gemini-generated sprites
-- 108 class directories in `data_v2_32/`
-- No copyrighted game rips.
-- Data dir: `data_v2_32/` with bincode+zstd cache (v2 format with super_ids + tags)
+- 52K+ artist-made tiles from 7 CC0/CC-BY sources
+- 14K Gemini-generated pixel art sprites (AI-augmented, verified quality)
+- Balanced to 19,876 tiles in `data_v3_32/` (capped 2K/class, 68 active classes)
+- Full unbalanced set: 75K+ tiles in `data_v2_32/` (108 class dirs)
+- No copyrighted game rips. Gemini sprites are AI-generated, not scraped.
 - Sources documented in `data/SOURCES.md`
 
 ## Anti-Patterns

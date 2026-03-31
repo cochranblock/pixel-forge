@@ -151,7 +151,10 @@ Epsilon prediction (standard DDPM) was tested but caused numerical instability w
 
 ## Training Pipeline
 
-- **19,876 balanced tiles** (capped 2K/class) from 7 CC0/CC-BY sources + Gemini sprites
+- **19,876 balanced tiles** (capped 2K/class) from two sources:
+  - 52K+ original tiles from 7 CC0/CC-BY artist-made datasets
+  - 14K Gemini-generated pixel art sprites (verified quality, clean 8-bit style)
+  - AI-augmented pipeline: Gemini generates training data, Pixel Forge learns from it
 - **Gaussian N(0,1) noise** — clean prediction target
 - Cosine noise schedule + min-SNR weighting (gamma=5) + CFG dropout (10%)
 - Per-epoch checkpoints (`--checkpoint-every 1`) for live testing
@@ -170,6 +173,9 @@ See [data/SOURCES.md](data/SOURCES.md) for full attribution.
 | Kenney 1-Bit Pack | 1,078 | CC0 | Kenney |
 | Hyptosis Tiles | 1,000+ | CC-BY 3.0 | Hyptosis |
 | David E. Gervais Tiles | 1,280 | CC-BY 3.0 | David E. Gervais |
+| **Gemini-generated** | **14,037** | **AI-generated** | Google Gemini (Nano Banana Pro) |
+
+The Gemini sprites were generated via text prompts, sliced from 6x5 grids into 32x32 tiles, background-removed, and quality-verified. They fill class gaps (many classes had <50 artist-made samples). This is an AI-augmented pipeline — one AI generates training data for another.
 
 ## Built-In Palettes
 
