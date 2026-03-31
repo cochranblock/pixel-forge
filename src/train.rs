@@ -52,8 +52,9 @@ pub struct TrainConfig {
     /// Warm-up epochs: linear ramp from lr_min to lr before decay kicks in.
     pub warmup_epochs: usize,
     /// V-prediction: model predicts velocity (noise - clean) instead of clean image.
-    /// Improves training stability in high-noise regions.
     pub v_prediction: bool,
+    /// Checkpoint every N epochs. 1 = every epoch (overwrites same file). 25 = default.
+    pub checkpoint_every: usize,
 }
 
 impl Default for TrainConfig {
@@ -77,6 +78,7 @@ impl Default for TrainConfig {
             v_prediction: false,
             condition_dir: None,
             mixed_precision: false,
+            checkpoint_every: 25,
         }
     }
 }
@@ -638,16 +640,18 @@ fn train_inner(
             println!("  epoch {}/{}: loss={:.6} lr={:.1e} ({:.1}s)", epoch + 1, config.epochs, avg_loss, lr, elapsed);
         }
 
-        if (epoch + 1) % 25 == 0 {
-            // Save checkpoint with EMA weights
+        if config.checkpoint_every > 0 && (epoch + 1) % config.checkpoint_every == 0 {
+            let cp = if config.checkpoint_every == 1 {
+                config.output.clone() // overwrite same file every epoch
+            } else {
+                format!("{}.epoch{}", config.output, epoch + 1)
+            };
             if let Some(ref ema) = ema {
                 let originals = ema.swap_in(varmap);
-                let cp = format!("{}.epoch{}", config.output, epoch + 1);
                 save_with_marker(varmap, &cp, config.v_prediction)?;
                 println!("  checkpoint (ema): {cp}");
                 EmaWeights::swap_out(&originals, varmap);
             } else {
-                let cp = format!("{}.epoch{}", config.output, epoch + 1);
                 save_with_marker(varmap, &cp, config.v_prediction)?;
                 println!("  checkpoint: {cp}");
             }

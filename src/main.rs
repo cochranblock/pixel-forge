@@ -136,6 +136,9 @@ enum Cmd {
         /// Mixed precision: f16 forward pass, f32 optimizer. ~2x faster on CUDA.
         #[arg(long)]
         fp16: bool,
+        /// Save checkpoint every N epochs. 1 = every epoch (overwrites same file).
+        #[arg(long, default_value_t = 25)]
+        checkpoint_every: usize,
     },
     /// Ingest Gemini-generated sprite sheets into training data.
     /// Slices grids, removes backgrounds, downscales to 32x32, sorts by filename.
@@ -1087,6 +1090,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             warmup,
             condition,
             fp16,
+            checkpoint_every,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -1103,6 +1107,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 warmup_epochs: warmup,
                 condition_dir: condition,
                 mixed_precision: fp16,
+                checkpoint_every,
                 ..Default::default()
             };
             train::train(&config)?;
