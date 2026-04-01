@@ -55,6 +55,8 @@ pub struct TrainConfig {
     pub v_prediction: bool,
     /// Checkpoint every N epochs. 1 = every epoch (overwrites same file). 25 = default.
     pub checkpoint_every: usize,
+    /// Resume from existing safetensors checkpoint. Loads weights before training.
+    pub resume: Option<String>,
 }
 
 impl Default for TrainConfig {
@@ -79,6 +81,7 @@ impl Default for TrainConfig {
             condition_dir: None,
             mixed_precision: false,
             checkpoint_every: 25,
+            resume: None,
         }
     }
 }
@@ -405,6 +408,23 @@ fn hflip(px: &mut [f32], img_size: u32) {
     }
 }
 
+/// Rotate a single sample 90 degrees clockwise in-place.
+/// For channel-first layout: px[c * n + y * w + x] → px[c * n + x * w + (w - 1 - y)]
+fn rot90_cw(px: &mut [f32], img_size: u32) {
+    let w = img_size as usize;
+    let n = w * w;
+    let mut buf = vec![0.0f32; n];
+    for c in 0..3 {
+        let base = c * n;
+        for y in 0..w {
+            for x in 0..w {
+                buf[x * w + (w - 1 - y)] = px[base + y * w + x];
+            }
+        }
+        px[base..base + n].copy_from_slice(&buf);
+    }
+}
+
 /// Corrupt: x_noisy = x * (1 - amount) + noise * amount
 /// Uses Gaussian N(0,1) noise — signal in [0,1], noise centered at 0.
 /// This gives the model amplitude cues to separate signal from noise.
@@ -490,7 +510,7 @@ fn train_inner(
     };
 
     println!("training: {} epochs, bs={}, lr={}, {} samples", config.epochs, config.batch_size, config.lr, n);
-    println!("augmentation: palette swap + h-flip (50% each)");
+    println!("augmentation: palette swap + h-flip (50% each) + rotation (0/90/180/270)");
     let pred_mode = if config.v_prediction { "v-pred" } else { "clean-pred" };
     let prec = if config.mixed_precision { " | fp16" } else { "" };
     println!("schedule: {sched} | {cfg_info} | ema={} | min_snr={} | {pred_mode}{prec}", config.ema, config.min_snr_gamma);
@@ -545,6 +565,11 @@ fn train_inner(
                 }
                 if rng.r#gen_bool(0.5) {
                     hflip(&mut sample, config.img_size);
+                }
+                // Random rotation: 0/90/180/270 degrees (25% each)
+                let rotations = rng.gen_range(0..4u8);
+                for _ in 0..rotations {
+                    rot90_cw(&mut sample, config.img_size);
                 }
 
                 batch_px.extend_from_slice(&sample);
@@ -682,7 +707,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
 
     let dataset = preprocess(&config.data_dir, config.img_size)?;
 
-    let varmap = VarMap::new();
+    let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
 
     let in_ch = if config.condition_dir.is_some() { 6 } else { 3 };
@@ -701,16 +726,28 @@ pub fn train(config: &TrainConfig) -> Result<()> {
         let model = AnvilUNet::new(vb)?;
         let params = AnvilUNet::param_count(&varmap);
         println!("model: Anvil (AnvilUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        if let Some(ref checkpoint) = config.resume {
+            varmap.load(checkpoint)?;
+            println!("resumed from {checkpoint}");
+        }
         train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     } else if config.medium {
         let model = MediumUNet::with_channels(vb, in_ch)?;
         let params = MediumUNet::param_count(&varmap);
         println!("model: Quench (MediumUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        if let Some(ref checkpoint) = config.resume {
+            varmap.load(checkpoint)?;
+            println!("resumed from {checkpoint}");
+        }
         train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     } else {
         let model = TinyUNet::with_channels(vb, in_ch)?;
         let params = TinyUNet::param_count(&varmap);
         println!("model: Cinder (TinyUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
+        if let Some(ref checkpoint) = config.resume {
+            varmap.load(checkpoint)?;
+            println!("resumed from {checkpoint}");
+        }
         train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
     }
 

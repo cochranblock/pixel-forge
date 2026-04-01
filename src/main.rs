@@ -139,6 +139,9 @@ enum Cmd {
         /// Save checkpoint every N epochs. 1 = every epoch (overwrites same file).
         #[arg(long, default_value_t = 25)]
         checkpoint_every: usize,
+        /// Resume from existing safetensors checkpoint.
+        #[arg(long)]
+        resume: Option<String>,
     },
     /// Ingest Gemini-generated sprite sheets into training data.
     /// Slices grids, removes backgrounds, downscales to 32x32, sorts by filename.
@@ -1091,6 +1094,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             condition,
             fp16,
             checkpoint_every,
+            resume,
         } => {
             let config = train::TrainConfig {
                 data_dir: data,
@@ -1108,6 +1112,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 condition_dir: condition,
                 mixed_precision: fp16,
                 checkpoint_every,
+                resume,
                 ..Default::default()
             };
             train::train(&config)?;
