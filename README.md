@@ -18,17 +18,17 @@ Train and run Gaussian diffusion models that generate 32x32 pixel art sprites. R
 
 ## What Exists Today
 
-- **Three model architectures** — Cinder (1.09M params), Quench (5.83M params), Anvil (16.9M params)
-- **Training loop** — Gaussian noise, clean prediction, cosine schedule, min-SNR weighting, CFG dropout, per-epoch checkpoints, `--resume` for fine-tuning
-- **Augmentation** — palette swap, horizontal flip, 90/180/270 rotation
-- **108 class directories** mapped via hybrid conditioning (10 super-categories + 12 binary tags)
-- **7 color palettes** — stardew, starbound, snes, nes, gameboy, pico8, endesga32
-- **f16 quantization** — `quantize` command halves model file size
-- **GUI** — egui desktop app with class picker, palette selector, generation
-- **CLI** — full command set for training, generation, and data pipeline
-- **Distributed generation** — cluster module distributes work across SSH nodes
-- **11 governance documents** baked into binary (`pixel-forge govdocs`)
-- **Android build scaffold** — AAB builds, not yet published to Play Store
+- **Three model architectures** — [Cinder](src/tiny_unet.rs#L16) (1.09M params, `[32,64,64]`), [Quench](src/medium_unet.rs#L17) (5.83M params, `[64,128,128]`), [Anvil](src/anvil_unet.rs#L17) (16.9M params, `[96,192,192]`). Param counts verified at [device_cap.rs:492](src/device_cap.rs#L492).
+- **Training loop** ([src/train.rs](src/train.rs#L501)) — [Gaussian noise](src/train.rs#L432), clean prediction, [cosine schedule](src/train.rs#L91), [min-SNR weighting](src/train.rs#L100) (gamma=5), [CFG dropout](src/train.rs#L578) (10%), per-epoch checkpoints, [`--resume`](src/train.rs#L59) for fine-tuning
+- **Augmentation** — [palette swap](src/train.rs#L348), [horizontal flip](src/train.rs#L399), [90/180/270 rotation](src/train.rs#L413)
+- **108 class directories** mapped via [hybrid conditioning](src/class_cond.rs#L12) ([10 super-categories](src/class_cond.rs#L12) + [12 binary tags](src/class_cond.rs#L16), [lookup table](src/class_cond.rs#L84))
+- **7 color palettes** — [load_palette](src/palette.rs#L17), [quantize](src/palette.rs#L55)
+- **f16 quantization** — [quantize_f32_to_f16](src/quantize.rs#L40)
+- **GUI** — [egui app](src/app.rs) with class picker, palette selector, generation
+- **CLI** — [clap command definitions](src/main.rs#L94)
+- **Distributed generation** — [cluster module](src/cluster.rs#L20) distributes work across [4 SSH nodes](src/cluster.rs#L20)
+- **11 governance documents** [baked into binary](src/main.rs#L10) via `include_str!` ([govdocs/](govdocs/))
+- **Android build scaffold** — [android/](android/) builds AAB, not yet published to Play Store
 
 ### What's In Progress
 
@@ -84,9 +84,9 @@ cargo run --release -- train --data data_v3_32 --epochs 500 \
 ### Known Issues (Bug History)
 
 The diffusion models produced blobs for weeks. Root causes found and fixed:
-1. **Uniform [0,1] noise** — signal and noise occupied the same range. Fixed: Gaussian N(0,1) noise.
-2. **CFG scale too high** — CFG 3.0 inverted outputs. Dialed back, then re-enabled at 3.0 after fixing the unconditional path.
-3. **Noise distribution mismatch** — sampling started from uniform noise while training used Gaussian. Fixed in v0.6.0.
+1. **Uniform [0,1] noise** — signal and noise occupied the same range. Fixed: [Gaussian N(0,1) noise](src/train.rs#L432) in corruption. Commit `541720cd`.
+2. **CFG scale** — inverted outputs at high scale. Now set to [3.0](src/train.rs#L759) with proper [unconditional path](src/train.rs#L814). Commit `68f2183a`.
+3. **Noise distribution mismatch** — sampling started from uniform noise while training used Gaussian. Fixed: all sampling paths now use [seeded_noise](src/train.rs#L764) (Gaussian). Commit `68f2183a`.
 
 ## Commands
 
@@ -117,15 +117,15 @@ The diffusion models produced blobs for weeks. Root causes found and fixed:
 
 ## Model Tiers
 
-| Tier | Name | Params | Size (f32/f16) | Channels | Notes |
-|------|------|--------|----------------|----------|-------|
-| Tiny | **Cinder** | 1.09M | 4.2 / 2.1 MB | [32, 64, 64] | Fast, mobile-suitable |
-| Medium | **Quench** | 5.83M | 22 / 11 MB | [64, 128, 128] + self-attention | Balanced |
-| XL | **Anvil** | 16.9M | 64 / 32 MB | [96, 192, 192], 4 ResBlocks/level | Highest capacity |
+| Tier | Name | Params | Size (f32/f16) | Channels | Source |
+|------|------|--------|----------------|----------|--------|
+| Tiny | **Cinder** | 1.09M | 4.2 / 2.1 MB | [32, 64, 64] | [src/tiny_unet.rs:16](src/tiny_unet.rs#L16) |
+| Medium | **Quench** | 5.83M | 22 / 11 MB | [64, 128, 128] + self-attention | [src/medium_unet.rs:17](src/medium_unet.rs#L17) |
+| XL | **Anvil** | 16.9M | 64 / 32 MB | [96, 192, 192], 4 ResBlocks/level | [src/anvil_unet.rs:17](src/anvil_unet.rs#L17) |
 
 ## Training Data
 
-**19,876 balanced tiles** (capped 2K/class, 68 active class directories):
+**19,876 balanced tiles** (capped 2K/class, 68 active class directories). Dataset loader: [train::preprocess](src/train.rs#L221). Tile count printed at [train.rs:320](src/train.rs#L320).
 
 | Source | Sprites | License | Notes |
 |--------|---------|---------|-------|
@@ -152,30 +152,32 @@ The diffusion models produced blobs for weeks. Root causes found and fixed:
 
 ## Platforms
 
+Device auto-detection: [pipeline::best_device](src/pipeline.rs#L25). Feature flags: [Cargo.toml:19](Cargo.toml#L19).
+
 | Platform | GPU | Status |
 |----------|-----|--------|
 | macOS ARM (M1/M2/M3) | Metal | working |
 | macOS Intel | CPU | working |
 | Linux x86_64 | CUDA / CPU | working |
-| Android ARM64 | CPU | builds, not published |
-| iOS ARM64 | Metal | scaffold only |
-| Web (PWA) | CPU | scaffold only |
+| Android ARM64 | CPU | builds ([android/](android/)), not published |
+| iOS ARM64 | Metal | scaffold only ([ios/](ios/)) |
+| Web (PWA) | CPU | scaffold only ([web/](web/)) |
 
 ## Tech Stack
 
-| Layer | Tool |
-|-------|------|
-| ML | Candle 0.8 (Hugging Face) — pure Rust |
-| GPU | Metal, CUDA, CPU fallback |
-| Data | bincode + zstd (dataset), safetensors (models) |
-| GUI | egui / eframe |
-| CLI | clap |
+| Layer | Tool | Source |
+|-------|------|--------|
+| ML | Candle 0.8 (Hugging Face) — pure Rust | [Cargo.toml:32](Cargo.toml#L32) |
+| GPU | Metal, CUDA, CPU fallback | [pipeline.rs:25](src/pipeline.rs#L25) |
+| Data | bincode + zstd (dataset), safetensors (models) | [train.rs:221](src/train.rs#L221) |
+| GUI | egui / eframe | [app.rs](src/app.rs) |
+| CLI | clap | [main.rs:94](src/main.rs#L94) |
 
-~11,370 lines of Rust. Zero Python. Zero JavaScript.
+~11,370 lines of Rust across 30 `.rs` files. Zero Python. Zero JavaScript.
 
 ## Governance Documents
 
-11 compliance-oriented documents embedded in the binary (self-assessed, not independently audited):
+11 compliance-oriented documents [embedded via include_str!](src/main.rs#L10) (self-assessed, not independently audited). Source files in [govdocs/](govdocs/).
 ```bash
 pixel-forge govdocs              # list all docs
 pixel-forge govdocs sbom         # Software Bill of Materials
