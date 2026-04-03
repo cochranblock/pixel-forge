@@ -511,7 +511,7 @@ fn train_inner(
     };
 
     println!("training: {} epochs, bs={}, lr={}, {} samples", config.epochs, config.batch_size, config.lr, n);
-    println!("augmentation: palette swap + h-flip (50% each) + rotation (0/90/180/270)");
+    println!("augmentation: palette swap + h-flip (50%) + rotation (0/90/180/270) + brightness (50%)");
     let pred_mode = if config.v_prediction { "v-pred" } else { "clean-pred" };
     let prec = if config.mixed_precision { " | fp16" } else { "" };
     println!("schedule: {sched} | {cfg_info} | ema={} | min_snr={} | {pred_mode}{prec}", config.ema, config.min_snr_gamma);
@@ -571,6 +571,13 @@ fn train_inner(
                 let rotations = rng.gen_range(0..4u8);
                 for _ in 0..rotations {
                     rot90_cw(&mut sample, config.img_size);
+                }
+                // Random brightness (50% chance): multiply by [0.8, 1.2], clamp [0,1]
+                if rng.r#gen_bool(0.5) {
+                    let factor = rng.gen_range(0.8f32..1.2f32);
+                    for v in sample.iter_mut() {
+                        *v = (*v * factor).clamp(0.0, 1.0);
+                    }
                 }
 
                 batch_px.extend_from_slice(&sample);
