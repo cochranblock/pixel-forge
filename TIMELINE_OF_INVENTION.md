@@ -10,7 +10,21 @@
 
 ## Entries
 
-### 2026-04-01/02 — Inference Bug Fixes + Documentation Audit + Anvil v7
+### 2026-04-03 — NanoSign Model Integrity + Documentation P23
+
+**What:** Integrated [NanoSign](src/nanosign.rs) — BLAKE3 integrity signing for all model files. Spec: [kova/docs/NANOSIGN.md](https://github.com/cochranblock/kova/blob/main/docs/NANOSIGN.md). Every `.safetensors` file is signed on save (36 bytes: `NSIG` + BLAKE3 hash) and verified on load. Tampered files are rejected; unsigned files pass for backward compat. Covers all 6 save paths ([train](src/train.rs#L442), [discriminator](src/discriminator.rs), [judge](src/judge.rs), [expert](src/expert.rs), [combiner](src/combiner.rs), [lora](src/lora.rs)) and all 10 load paths ([quantize::load_varmap](src/quantize.rs#L161), --resume, and module-specific loaders). Added `blake3` dependency.
+
+Full doc audit per P23 Triple Lens: guest analysis (outsider perspective), code verification (every claim source-linked), truthfulness pass (false claims corrected). Updated all docs: README, PROOF_OF_ARTIFACTS, TIMELINE_OF_INVENTION, SOURCES.md, MOE_PLAN, ATTRIBUTION.
+
+Planned tiered micro-model architecture: palette specialist (50K) → silhouette generator (200K) → detail painter (Anvil-class). Decomposes the generation problem so each specialist does less work. Infrastructure partially exists in [moe.rs](src/moe.rs) stage cascade.
+
+Investigated [any-gpu](https://github.com/cochranblock/any-gpu) for cross-vendor GPU training (AMD 5700 XT on bt). any-gpu has 31 forward ops (conv2d, group_norm, attention, etc., 54/54 tests passing) but needs autograd + optimizer for training. Path forward: add backward ops to any-gpu, then `--features any-gpu` in pixel-forge.
+
+**Commits:** `92748094` (NanoSign), `d1e60bf6` (doc audit), `2cfc5c0a` (source-linked README), `801bc218` (truthful README)
+
+**AI Role:** AI implemented NanoSign module, performed P23-style guest analysis (optimist: solid engineering; pessimist: output quality not game-ready; paranoia: unsigned models, false data claims). Human directed NanoSign integration and approved documentation rewrites.
+
+### 2026-04-01/02 — Inference Bug Fixes + Training Improvements + Anvil v7
 
 **What:** Found and fixed three inference bugs that caused blurry output:
 1. [CFG scale was 1.0](src/train.rs#L759) (disabled) — raised to 3.0. Model trains with CFG dropout but sampling never used the unconditional path.
@@ -21,13 +35,9 @@ Added [`--resume` flag](src/train.rs#L59) for fine-tuning from existing checkpoi
 
 Tested CUDA on lf's RTX 3070 — same epoch speed as CPU (~780s), EMA caused OOM (15GB RSS). CPU training is the stable path on 16GB nodes.
 
-Full guest analysis of the repo. Rewrote README for truthfulness — every claim source-linked, aspirational features marked as such. Fixed SOURCES.md false claim ("all hand-pixeled" when 70% is Gemini-generated). Documentation audit across all doc files.
+**Commits:** `d4b28270` (resume + rotation), `68f2183a` (inference fixes)
 
-Investigated [any-gpu](https://github.com/cochranblock/any-gpu) (wgpu tensor engine) as potential cross-vendor GPU backend — has matmul/add/mul, needs conv2d + autograd for training.
-
-**Commits:** `d4b28270` (resume + rotation), `68f2183a` (inference fixes), `801bc218` (truthful README), `2cfc5c0a` (source-linked README)
-
-**AI Role:** AI identified inference bugs via code analysis, implemented fixes, performed guest analysis. Human directed investigation priorities, approved README rewrite, managed worker node deployment.
+**AI Role:** AI identified inference bugs via code analysis, implemented fixes. Human directed investigation priorities and managed worker node deployment.
 
 ### 2026-03-28/29/30 — Diffusion Debug + Gaussian Noise Fix + Anvil Training + Multi-Arch
 

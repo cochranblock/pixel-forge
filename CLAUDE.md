@@ -52,6 +52,7 @@ Part of the Cochran Block ecosystem. Powered by KOVA. Human direction, AI execut
 | gpu_lock | src/gpu_lock.rs | File-based GPU lock for training |
 | relight | src/relight.rs | 4-directional sprites from SDF + normals |
 | quantize | src/quantize.rs | f32 → f16 model quantization |
+| nanosign | src/nanosign.rs | NanoSign BLAKE3 model integrity — sign on save, verify on load |
 
 ## Model Tiers
 
@@ -110,6 +111,37 @@ Hybrid system replacing the old 16-class integer embeddings:
 - Full unbalanced set: 75K+ tiles in `data_v2_32/` (108 class dirs)
 - No copyrighted game rips. Gemini sprites are AI-generated, not scraped.
 - Sources documented in `data/SOURCES.md`
+
+## NanoSign Model Integrity
+
+All `.safetensors` model files are signed with NanoSign (BLAKE3, 36 bytes appended).
+- **Save:** `nanosign::sign_and_log()` after every `varmap.save()` or `save_with_marker()`
+- **Load:** `nanosign::verify_or_bail()` before every `varmap.load()` or `load_varmap()`
+- **Unsigned files:** pass (backward compat). **Tampered files:** rejected.
+- Spec: `~/kova/docs/NANOSIGN.md`
+
+## P23 Triple Lens
+
+Architecture decisions use three opposing perspectives (per kova P23):
+- **Optimist:** best case, what works, competitive advantages
+- **Pessimist:** what fails, gaps, hardest unsolved problems
+- **Paranoia:** security risks, attack vectors, failure modes
+- **Synthesis:** combines into one honest assessment with priority-ordered action items
+
+Applied to: documentation audits, feature planning, architecture reviews.
+
+## Future: any-gpu Backend
+
+[any-gpu](https://github.com/cochranblock/any-gpu) (wgpu/Vulkan tensor engine) is planned as an alternative training backend. Would enable training on AMD GPUs (bt's 5700 XT) alongside NVIDIA (lf's 3070). Currently has 31 forward ops; needs autograd + optimizer before pixel-forge can use it for training.
+
+## Future: Tiered Pipeline
+
+Planned decomposition of monolithic diffusion into specialists:
+1. Palette specialist (~50K params) — picks 8-16 colors for a given class
+2. Silhouette generator (~200K params) — binary mask shape only
+3. Detail painter (Anvil-class) — fills in details on correct silhouette + palette
+
+Each specialist trains faster and does its job better than one model doing everything.
 
 ## Anti-Patterns
 

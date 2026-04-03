@@ -27,6 +27,7 @@ Train and run Gaussian diffusion models that generate 32x32 pixel art sprites. R
 - **GUI** — [egui app](src/app.rs) with class picker, palette selector, generation
 - **CLI** — [clap command definitions](src/main.rs#L94)
 - **Distributed generation** — [cluster module](src/cluster.rs#L20) distributes work across [4 SSH nodes](src/cluster.rs#L20)
+- **NanoSign model integrity** — [BLAKE3 signing](src/nanosign.rs) on all model saves, verification on all loads. Tampered files rejected. [Spec](https://github.com/cochranblock/kova/blob/main/docs/NANOSIGN.md).
 - **11 governance documents** [baked into binary](src/main.rs#L10) via `include_str!` ([govdocs/](govdocs/))
 - **Android build scaffold** — [android/](android/) builds AAB, not yet published to Play Store
 
@@ -35,12 +36,14 @@ Train and run Gaussian diffusion models that generate 32x32 pixel art sprites. R
 - **Output quality** — models generate recognizable but rough sprites; not yet usable as game art
 - **Anvil v7 training** — fine-tuning from v6 with rotation augmentation on worker node
 - **MoE cascade** — Cinder→Quench pipeline code exists, expert heads designed but not validated at quality
-- **Community sprite sharing** — planned, not implemented
+- **[any-gpu](https://github.com/cochranblock/any-gpu) backend** — wgpu/Vulkan tensor engine with 31 ops (conv2d, group_norm, attention, etc.). Planned as future training backend for AMD GPUs (bt's 5700 XT). Needs autograd + optimizer.
+- **Tiered pipeline** — planned: palette specialist (50K) → silhouette generator (200K) → detail painter (Anvil-class), each specialist trained separately
 
 ### What's Not Done
 
 - **iOS app** — scaffold only, not buildable
 - **Web/PWA** — HTML scaffold only, WASM target not functional
+- **Community sprite sharing** — planned, not implemented
 - **GitHub Releases** — binaries built locally but not published as GitHub releases yet
 
 ## Quick Start
@@ -173,7 +176,7 @@ Device auto-detection: [pipeline::best_device](src/pipeline.rs#L25). Feature fla
 | GUI | egui / eframe | [app.rs](src/app.rs) |
 | CLI | clap | [main.rs:94](src/main.rs#L94) |
 
-~11,370 lines of Rust across 30 `.rs` files. Zero Python. Zero JavaScript.
+~11,479 lines of Rust across 31 `.rs` files. Zero Python. Zero JavaScript.
 
 ## Governance Documents
 

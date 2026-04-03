@@ -26,7 +26,7 @@ Note: Expert heads, Judge model, and Scene generation exist as code but are not 
 
 | Metric | Value | Source |
 |--------|-------|--------|
-| Lines of Rust | ~11,370 across 30 .rs files | `find src -name "*.rs" \| xargs wc -l` |
+| Lines of Rust | ~11,479 across 31 .rs files | `find src -name "*.rs" \| xargs wc -l` |
 | Direct dependencies | 16 required + 3 optional | [Cargo.toml:27](Cargo.toml#L27) |
 | Binary size (macOS ARM) | 9.2 MB (opt-level=z, LTO, strip) | [release/](release/) |
 | Binary size (macOS x86) | 7.6 MB | [release/](release/) |
@@ -46,6 +46,7 @@ Note: Expert heads, Judge model, and Scene generation exist as code but are not 
 | Prediction target | Clean image | [train.rs:759](src/train.rs#L759) (DEFAULT_CFG_SCALE) |
 | CFG scale | 3.0 (fixed from 1.0 on 2026-04-02) | [train.rs:759](src/train.rs#L759), commit `68f2183a` |
 | Augmentation | palette swap, h-flip, rotation (0/90/180/270) | [train.rs:348](src/train.rs#L348), [train.rs:399](src/train.rs#L399), [train.rs:413](src/train.rs#L413) |
+| Model integrity | NanoSign: BLAKE3 sign on save, verify on load | [src/nanosign.rs](src/nanosign.rs), spec: [NANOSIGN.md](https://github.com/cochranblock/kova/blob/main/docs/NANOSIGN.md) |
 
 ## Training Loss (Anvil v6, 200 epochs on lf RTX 3070)
 
@@ -95,6 +96,7 @@ Total training time: 151,441 seconds (~42 hours). Config: bs=16, lr=2e-4, cosine
 | Governance Docs | working (self-assessed) | [govdocs/](govdocs/), [main.rs:10](src/main.rs#L10) |
 | Android AAB | builds, not published | [android/](android/) |
 | `--resume` fine-tuning | working | [src/train.rs:59](src/train.rs#L59), commit `d4b28270` |
+| NanoSign (BLAKE3 model signing) | working | [src/nanosign.rs](src/nanosign.rs), 6 save + 10 load paths, commit `92748094` |
 
 ## Training Data Sources
 
