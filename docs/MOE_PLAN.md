@@ -1,13 +1,13 @@
 # Pixel Forge MoE — Mixture of Experts for Micro Diffusion
 
-> **Status:** IMPLEMENTED. Expert training in progress on lf RTX 3070 (epoch 15/20 as of 2026-03-20).
-> See [TIMELINE_OF_INVENTION.md](TIMELINE_OF_INVENTION.md) for the build narrative.
+> **Status:** Code exists ([src/moe.rs](../src/moe.rs), [src/expert.rs](../src/expert.rs), [src/expert_train.rs](../src/expert_train.rs)). Expert training ran on lf but output quality not validated. Base model (Anvil) is the current focus — MoE cascade is secondary until single-stage quality improves.
+> See [TIMELINE_OF_INVENTION.md](../TIMELINE_OF_INVENTION.md) for the build narrative.
 
 ## The Idea
 
 One base model (Quench, 5.8M params) loaded once in RAM. Multiple tiny expert heads (~50K params each) that specialize in different aspects of sprite generation. A router (the Judge model we already built) decides which expert fires at each denoising stage.
 
-Nobody has done MoE at this scale for diffusion. The research papers are all 1B+ param models. We're proving it works at 6M params on a phone.
+MoE at this scale for diffusion is uncommon — most research targets 1B+ param models. This design targets 6M params on a phone.
 
 ## Architecture
 

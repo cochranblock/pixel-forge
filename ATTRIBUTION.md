@@ -52,3 +52,15 @@ The tiny diffusion model architecture and training approach were inspired by:
 - **Author:** Matt Busel (mattbusel)
 - **Repository:** https://github.com/mattbusel/tokio-prompt-orchestrator
 - **What we used:** DAG pipeline pattern with bounded channels, circuit breaker, request deduplication, and backpressure handling. Adapted from LLM inference orchestration to kova C2 distributed job queue for training/generation across GPU nodes.
+
+### AI Contributors
+- **Claude Opus 4.6** (Anthropic) — code implementation, architecture debug, documentation. Listed as contributor in source headers.
+- **Google Gemini** (Nano Banana Pro) — generated ~14,000 training sprites via text prompts. Disclosed in [data/SOURCES.md](data/SOURCES.md).
+
+## Related Projects (CochranBlock)
+
+- [kova](https://github.com/cochranblock/kova) — augment engine. Drives pixel-forge via [plugin protocol](src/plugin.rs).
+- [any-gpu](https://github.com/cochranblock/any-gpu) — wgpu/Vulkan tensor engine (in development). Planned as future backend for cross-vendor GPU training (AMD + NVIDIA + Intel).
+- [cochranblock](https://github.com/cochranblock/cochranblock) — the website
+- [approuter](https://github.com/cochranblock/approuter) — reverse proxy
+- [oakilydokily](https://github.com/cochranblock/oakilydokily) — blog engine

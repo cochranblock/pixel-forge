@@ -10,6 +10,25 @@
 
 ## Entries
 
+### 2026-04-01/02 — Inference Bug Fixes + Documentation Audit + Anvil v7
+
+**What:** Found and fixed three inference bugs that caused blurry output:
+1. [CFG scale was 1.0](src/train.rs#L759) (disabled) — raised to 3.0. Model trains with CFG dropout but sampling never used the unconditional path.
+2. [Anvil sampling started from uniform noise](src/train.rs#L1183) while training used Gaussian — distribution mismatch wasted early denoising steps. Fixed all 4 sampling paths to use [seeded_noise](src/train.rs#L764).
+3. [DDIM noise extraction](src/moe.rs#L63) had no clamping — division by small values caused numerical blow-up. Added [-3,3] clamp.
+
+Added [`--resume` flag](src/train.rs#L59) for fine-tuning from existing checkpoints. Added [rotation augmentation](src/train.rs#L413) (0/90/180/270). Kicked off Anvil v7 training on lf (fine-tuning from v6, rotation, lr=5e-5, bs=8).
+
+Tested CUDA on lf's RTX 3070 — same epoch speed as CPU (~780s), EMA caused OOM (15GB RSS). CPU training is the stable path on 16GB nodes.
+
+Full guest analysis of the repo. Rewrote README for truthfulness — every claim source-linked, aspirational features marked as such. Fixed SOURCES.md false claim ("all hand-pixeled" when 70% is Gemini-generated). Documentation audit across all doc files.
+
+Investigated [any-gpu](https://github.com/cochranblock/any-gpu) (wgpu tensor engine) as potential cross-vendor GPU backend — has matmul/add/mul, needs conv2d + autograd for training.
+
+**Commits:** `d4b28270` (resume + rotation), `68f2183a` (inference fixes), `801bc218` (truthful README), `2cfc5c0a` (source-linked README)
+
+**AI Role:** AI identified inference bugs via code analysis, implemented fixes, performed guest analysis. Human directed investigation priorities, approved README rewrite, managed worker node deployment.
+
 ### 2026-03-28/29/30 — Diffusion Debug + Gaussian Noise Fix + Anvil Training + Multi-Arch
 
 **What:** Debugged fundamental output quality issue. Root cause: uniform [0,1] noise made signal/noise indistinguishable. Fixed: Gaussian N(0,1). Tested epsilon prediction — numerical instability with flow-matching, reverted to clean prediction. Dataset rebalanced 75K→20K (capped 2K/class). Added `--checkpoint-every` flag for per-epoch saves. Anvil v6 (16.9M params) training on RTX 3070 — loss 0.08 at epoch 6, already showing structured output. Quench v6 on RTX 3050 Ti in parallel. Multi-arch release: macOS ARM/Intel, Linux x86, Android AAB. iOS scaffold + PWA scaffold. Mobile GUI: removed Anvil button, cascade default, hybrid model validation, clickable footer. Community sprite upload. Feature graphic. Store screenshots on Pixel 9 Pro XL.
@@ -69,10 +88,10 @@
 
 ### 2026-03 — From-Scratch Diffusion Models
 
-**What:** Built Spark/Flame/Blaze tier transformer models from scratch using Candle. BPE tokenizer. On-device training with cosine LR, DPO data support, cross-entropy fix. Three bundled models: Cinder (4.2MB), Quench (22MB), Anvil (64MB).
-**Why:** No dependency on external model providers. Models trained on curated data, embedded in the binary, run on-device with zero cloud calls.
-**Commit:** See kova repo `kova_model` entries
-**AI Role:** AI implemented transformer architecture and training loop. Human directed model tiers, data curation, and quality gates.
+**What:** Built diffusion models from scratch using Candle. Early codenames were Spark/Flame/Blaze (later renamed to Cinder/Quench/Anvil). Three UNet tiers: [Cinder](src/tiny_unet.rs#L16) (1.09M/4.2MB), [Quench](src/medium_unet.rs#L17) (5.83M/22MB), [Anvil](src/anvil_unet.rs#L17) (16.9M/64MB). On-device training with cosine LR, CFG dropout, min-SNR weighting.
+**Why:** No dependency on external model providers. Models trained on curated data, run on-device with zero cloud calls.
+**Commit:** See kova repo `kova_model` entries and pixel-forge early commits
+**AI Role:** AI implemented UNet architecture and training loop. Human directed model tiers, data curation, and quality gates.
 
 ---
 

@@ -1,7 +1,7 @@
 # Pixel Forge Training Data — Sources & Attribution
 
-All training data is hand-pixeled by known artists. No AI-generated images.
-No copyrighted game rips. Every source is free for commercial use.
+Training data comes from two categories: artist-made CC0/CC-BY sprites and AI-generated sprites.
+No copyrighted game rips. All artist-made sources are free for commercial use.
 
 ## Source 1: Dungeon Crawl Stone Soup Tiles (~6,000 sprites, 32×32)
 
@@ -65,6 +65,15 @@ No copyrighted game rips. Every source is free for commercial use.
 - **Categories:** 930+ creatures, 350+ items, weapons, armor, town/dungeon tiles
 - **Attribution Required:** Credit David E. Gervais.
 
+## Source 8: Gemini-Generated Pixel Art (~14,000 sprites, 32×32)
+
+- **License:** AI-generated (not copyrighted in most jurisdictions)
+- **Generator:** Google Gemini (Nano Banana Pro)
+- **Method:** Text prompts → 6x5 grid sheets → sliced to 32×32 → background removed → quality verified
+- **Ingestion:** `pixel-forge ingest-gemini` command ([src/main.rs](../src/main.rs))
+- **Categories:** Fills class gaps where artist-made sprites had <50 samples (e.g., lightsaber, cyborg, mech, fairy)
+- **Disclosure:** These are AI-generated sprites used as training data for another AI model. ~70% of the balanced `data_v3_32/` dataset is Gemini-generated. The remaining ~30% is artist-made from Sources 1-7.
+
 ---
 
 ## License Summary
@@ -76,9 +85,13 @@ No copyrighted game rips. Every source is free for commercial use.
 | Kenney (all) | CC0 | No |
 | Hyptosis | CC-BY 3.0 | Yes — Hyptosis |
 | Gervais | CC-BY 3.0 | Yes — David E. Gervais |
+| **Gemini** | **AI-generated** | **N/A — disclose as AI-generated** |
 
 ## Training Use
 
-These sprites are used to train a tiny diffusion model (TinyUNet) for pixel art generation.
-The model learns pixel art patterns, not specific sprites — it generates new, original pixel art.
-All sources explicitly permit commercial use and derivative works.
+These sprites train three diffusion models ([Cinder](../src/tiny_unet.rs), [Quench](../src/medium_unet.rs), [Anvil](../src/anvil_unet.rs)) for pixel art generation. The models learn pixel art patterns, not specific sprites — they generate new, original pixel art.
+
+Artist-made sources (1-7) explicitly permit commercial use and derivative works.
+AI-generated sprites (Source 8) fill class gaps and are disclosed as such.
+
+Dataset preprocessing: [train::preprocess](../src/train.rs#L221). Balanced set: 19,876 tiles in `data_v3_32/` (capped 2K/class, 68 active class dirs).
