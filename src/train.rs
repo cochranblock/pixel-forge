@@ -997,6 +997,19 @@ pub fn sample_seeded(
     steps: usize,
     seed: Option<u64>,
 ) -> Result<Vec<RgbaImage>> {
+    sample_seeded_cfg(model_path, cond, img_size, count, steps, seed, DEFAULT_CFG_SCALE)
+}
+
+/// Seeded sample with configurable CFG scale.
+pub fn sample_seeded_cfg(
+    model_path: &str,
+    cond: &crate::class_cond::ClassCond,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+    seed: Option<u64>,
+    cfg_scale: f64,
+) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
 
@@ -1006,8 +1019,6 @@ pub fn sample_seeded(
     let model = TinyUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
-
-    let cfg_scale = DEFAULT_CFG_SCALE;
     let params = TinyUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
     println!("model: {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);
@@ -1090,6 +1101,19 @@ pub fn sample_medium_seeded(
     steps: usize,
     seed: Option<u64>,
 ) -> Result<Vec<RgbaImage>> {
+    sample_medium_seeded_cfg(model_path, cond, img_size, count, steps, seed, DEFAULT_CFG_SCALE)
+}
+
+/// Seeded Quench sample with configurable CFG scale.
+pub fn sample_medium_seeded_cfg(
+    model_path: &str,
+    cond: &crate::class_cond::ClassCond,
+    img_size: u32,
+    count: u32,
+    steps: usize,
+    seed: Option<u64>,
+    cfg_scale: f64,
+) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
 
@@ -1099,8 +1123,6 @@ pub fn sample_medium_seeded(
     let model = MediumUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
-
-    let cfg_scale = DEFAULT_CFG_SCALE;
     let params = MediumUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
     println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);

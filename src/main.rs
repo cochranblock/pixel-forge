@@ -260,6 +260,9 @@ enum Cmd {
         /// Generate 4-directional sprite sheet (front/left/right/back) via relighting.
         #[arg(long)]
         four_dir: bool,
+        /// CFG guidance scale. Higher = stronger class adherence.
+        #[arg(long, default_value_t = 3.0)]
+        cfg: f64,
     },
     /// Record a swipe (good/bad) on a generated sprite for Judge training.
     Swipe {
@@ -537,6 +540,9 @@ enum Cmd {
         /// Output file.
         #[arg(short, long, default_value = "cascade.png")]
         output: String,
+        /// CFG guidance scale. Higher = stronger class adherence.
+        #[arg(long, default_value_t = 3.0)]
+        cfg: f64,
     },
     /// Upscale 16x16 PNGs from data/ to 32x32 in data_v2_32/ (nearest-neighbor).
     Upscale {
@@ -571,6 +577,9 @@ enum Cmd {
         /// Output file.
         #[arg(short, long, default_value = "anvil.png")]
         output: String,
+        /// CFG guidance scale. Higher = stronger class adherence.
+        #[arg(long, default_value_t = 3.0)]
+        cfg: f64,
     },
 }
 
@@ -1128,6 +1137,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             medium,
             seed,
             four_dir,
+            cfg,
         } => {
             if class.is_empty() {
                 anyhow::bail!("class name cannot be empty. Try: character, weapon, dragon, potion, tree");
@@ -1145,9 +1155,9 @@ PackageLicenseDeclared: MIT OR Apache-2.0
 
             let pal = palette::load_palette(&palette_name)?;
             let raw_images = if medium {
-                train::sample_medium_seeded(&model, &cond, size, count, steps, seed)?
+                train::sample_medium_seeded_cfg(&model, &cond, size, count, steps, seed, cfg)?
             } else {
-                train::sample_seeded(&model, &cond, size, count, steps, seed)?
+                train::sample_seeded_cfg(&model, &cond, size, count, steps, seed, cfg)?
             };
 
             let processed: Vec<image::RgbaImage> = raw_images
@@ -1669,7 +1679,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             };
             println!("done: {out}");
         }
-        Cmd::Cascade { class, quench, cinder, experts, count, quench_steps, cinder_steps, palette: palette_name, output } => {
+        Cmd::Cascade { class, quench, cinder, experts, count, quench_steps, cinder_steps, palette: palette_name, output, cfg } => {
             let cond = class_cond::lookup(&class.to_lowercase());
 
             let pal = palette::load_palette(&palette_name)?;
@@ -1684,7 +1694,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 cinder_steps,
             };
 
-            let raw_images = moe::cascade_sample(&quench, &cinder, experts_path, &cond, 32, count, &config)?;
+            let raw_images = moe::cascade_sample(&quench, &cinder, experts_path, &cond, 32, count, &config, cfg)?;
 
             let processed: Vec<image::RgbaImage> = raw_images
                 .into_iter()
@@ -1776,11 +1786,11 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 }
             }
         }
-        Cmd::Anvil { class, anvil, count, steps, palette: palette_name, output } => {
+        Cmd::Anvil { class, anvil, count, steps, palette: palette_name, output, cfg } => {
             let cond = class_cond::lookup(&class.to_lowercase());
 
             let pal = palette::load_palette(&palette_name)?;
-            let raw_images = moe::anvil_sample(&anvil, &cond, 32, count, steps)?;
+            let raw_images = moe::anvil_sample(&anvil, &cond, 32, count, steps, cfg)?;
 
             let processed: Vec<image::RgbaImage> = raw_images
                 .into_iter()

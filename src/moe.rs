@@ -77,6 +77,7 @@ pub fn cascade_sample(
     img_size: u32,
     count: u32,
     config: &CascadeConfig,
+    cfg_scale: f64,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let total_steps = config.quench_steps + config.cinder_steps;
@@ -114,7 +115,6 @@ pub fn cascade_sample(
     };
 
     // CFG setup — hybrid conditioning
-    let cfg_scale = train::DEFAULT_CFG_SCALE;
     let (super_tensor, tags_tensor, null_super, null_tags) = train::cond_tensors(cond, 1, &device)?;
 
     println!("cascade: {} Quench steps → {} Cinder+Expert steps = {} total, cfg={}",
@@ -185,6 +185,7 @@ pub fn anvil_sample(
     img_size: u32,
     count: u32,
     steps: usize,
+    cfg_scale: f64,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
 
@@ -196,7 +197,6 @@ pub fn anvil_sample(
     let anvil_v_pred = train::detect_v_pred(anvil_path);
     crate::quantize::load_varmap(&mut anvil_vm, anvil_path)?;
 
-    let cfg_scale = train::DEFAULT_CFG_SCALE;
     let (super_tensor, tags_tensor, null_super, null_tags) = train::cond_tensors(cond, 1, &device)?;
     let mut images = Vec::new();
 
@@ -252,6 +252,7 @@ pub fn cascade_with_gate(
         let sprites = cascade_sample(
             quench_path, cinder_path, experts_path,
             cond, img_size, batch, config,
+            train::DEFAULT_CFG_SCALE,
         )?;
 
         for sprite in sprites {
@@ -305,7 +306,7 @@ pub fn anvil_with_gate(
         let need = count - accepted.len() as u32;
         let batch = need.min(batch_size);
 
-        let sprites = anvil_sample(anvil_path, cond, img_size, batch, steps)?;
+        let sprites = anvil_sample(anvil_path, cond, img_size, batch, steps, train::DEFAULT_CFG_SCALE)?;
 
         for sprite in sprites {
             let (pass, score) = crate::discriminator::quality_gate(

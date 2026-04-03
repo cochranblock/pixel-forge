@@ -916,6 +916,7 @@ fn cascade_for_display(
         &cinder_path.to_string_lossy(),
         experts_path.as_deref(),
         cond, img_size, count, &config,
+        crate::train::DEFAULT_CFG_SCALE,
     )?;
 
     let processed: Vec<image::RgbaImage> = raw_images
@@ -954,6 +955,7 @@ fn anvil_for_display(
     let raw_images = crate::moe::anvil_sample(
         &anvil_path.to_string_lossy(),
         cond, img_size, count, steps,
+        crate::train::DEFAULT_CFG_SCALE,
     )?;
 
     let processed: Vec<image::RgbaImage> = raw_images
