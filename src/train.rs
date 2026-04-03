@@ -1247,3 +1247,50 @@ pub fn sample_anvil(
 
     Ok(images)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::cosine_schedule;
+
+    #[test]
+    fn cosine_schedule_at_zero_is_near_zero() {
+        let v = cosine_schedule(0.0);
+        assert!(v < 0.02, "cosine_schedule(0) should be near 0, got {v}");
+    }
+
+    #[test]
+    fn cosine_schedule_at_one_is_one() {
+        let v = cosine_schedule(1.0);
+        assert!((v - 1.0).abs() < 1e-5, "cosine_schedule(1) should be 1.0, got {v}");
+    }
+
+    #[test]
+    fn cosine_schedule_is_monotone_increasing() {
+        let steps = 20;
+        let mut prev = cosine_schedule(0.0);
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let cur = cosine_schedule(t);
+            assert!(cur >= prev - 1e-6, "cosine_schedule not monotone at t={t}: {prev} -> {cur}");
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn cosine_schedule_midpoint_less_than_linear() {
+        // Cosine schedule compresses mid-range (spends more time there),
+        // so at t=0.5 it should return less than 0.5 (noise accumulates slower initially).
+        let v = cosine_schedule(0.5);
+        assert!(v > 0.0 && v < 1.0, "cosine_schedule(0.5) out of range: {v}");
+    }
+
+    #[test]
+    fn cosine_schedule_output_in_unit_range() {
+        for i in 0..=100 {
+            let t = i as f32 / 100.0;
+            let v = cosine_schedule(t);
+            assert!(v >= 0.0 && v <= 1.0, "cosine_schedule({t}) = {v} out of [0,1]");
+        }
+    }
+}

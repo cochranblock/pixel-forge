@@ -267,3 +267,71 @@ fn hex_to_rgba(hex: u32) -> Color {
     let b = (hex & 0xFF) as u8;
     [r, g, b, 255]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn all_named_palettes_load() {
+        for name in &["stardew", "starbound", "snes", "nes", "gameboy", "endesga32", "pico8"] {
+            let p = load_palette(name).unwrap();
+            assert!(!p.is_empty(), "palette {name} is empty");
+        }
+    }
+
+    #[test]
+    fn unknown_palette_errors() {
+        assert!(load_palette("nonexistent_palette_xyz").is_err());
+    }
+
+    #[test]
+    fn quantize_snaps_to_palette() {
+        // Single-color palette: pure red.
+        let palette: Vec<Color> = vec![[255, 0, 0, 255]];
+        let mut img = RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, Rgba([200, 100, 50, 255]));
+        img.put_pixel(1, 0, Rgba([10, 220, 10, 255]));
+        img.put_pixel(0, 1, Rgba([0, 0, 200, 255]));
+        img.put_pixel(1, 1, Rgba([255, 0, 0, 255]));
+        let out = quantize(&img, &palette);
+        for pixel in out.pixels() {
+            assert_eq!(*pixel, Rgba([255, 0, 0, 255]));
+        }
+    }
+
+    #[test]
+    fn quantize_preserves_transparency() {
+        let palette: Vec<Color> = vec![[255, 0, 0, 255]];
+        let mut img = RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, Rgba([200, 100, 50, 0])); // fully transparent
+        let out = quantize(&img, &palette);
+        assert_eq!(out.get_pixel(0, 0)[3], 0, "transparent pixel alpha must stay 0");
+    }
+
+    #[test]
+    fn quantize_picks_nearest_in_two_color_palette() {
+        // Two colors: pure white and pure black.
+        let palette: Vec<Color> = vec![[0, 0, 0, 255], [255, 255, 255, 255]];
+        let mut img = RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, Rgba([10, 10, 10, 255]));   // near black
+        img.put_pixel(1, 0, Rgba([240, 240, 240, 255])); // near white
+        let out = quantize(&img, &palette);
+        assert_eq!(out.get_pixel(0, 0), &Rgba([0, 0, 0, 255]));
+        assert_eq!(out.get_pixel(1, 0), &Rgba([255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn stardew_palette_has_expected_size() {
+        let p = load_palette("stardew").unwrap();
+        // Should have 48 colors as documented in list_palettes()
+        assert!(p.len() >= 40, "stardew palette too small: {}", p.len());
+    }
+
+    #[test]
+    fn gameboy_palette_has_four_colors() {
+        let p = load_palette("gameboy").unwrap();
+        assert_eq!(p.len(), 4);
+    }
+}

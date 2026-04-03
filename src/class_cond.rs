@@ -298,3 +298,65 @@ pub fn super_color(id: u32) -> (u8, u8, u8) {
         _ => (0, 0, 0),        // null/unknown — black
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_cond_has_null_super() {
+        let c = ClassCond::null();
+        assert_eq!(c.super_id, CFG_NULL_SUPER);
+        assert_eq!(c.tags, CFG_NULL_TAGS);
+    }
+
+    #[test]
+    fn character_is_humanoid_super() {
+        let c = lookup("character");
+        assert_eq!(c.super_id, super_cat::HUMANOID);
+        assert_eq!(c.tags[tag::ALIVE], 1.0);
+        assert_eq!(c.tags[tag::HUMANOID], 1.0);
+    }
+
+    #[test]
+    fn dragon_is_monster_with_hostile_and_magical() {
+        let c = lookup("dragon");
+        assert_eq!(c.super_id, super_cat::MONSTER);
+        assert_eq!(c.tags[tag::ALIVE], 1.0);
+        assert_eq!(c.tags[tag::HOSTILE], 1.0);
+        assert_eq!(c.tags[tag::MAGICAL], 1.0);
+    }
+
+    #[test]
+    fn potion_is_consumable_with_edible_and_magical() {
+        let c = lookup("potion");
+        assert_eq!(c.super_id, super_cat::CONSUMABLE);
+        assert_eq!(c.tags[tag::EDIBLE], 1.0);
+        assert_eq!(c.tags[tag::MAGICAL], 1.0);
+    }
+
+    #[test]
+    fn weapon_has_held_item_tag() {
+        let c = lookup("sword");
+        assert_eq!(c.super_id, super_cat::WEAPON);
+        assert_eq!(c.tags[tag::HELD_ITEM], 1.0);
+        assert_eq!(c.tags[tag::ALIVE], 0.0);
+    }
+
+    #[test]
+    fn unknown_class_returns_valid_cond() {
+        let c = lookup("some_unknown_class_xyz");
+        // Must not panic, super_id must be in range
+        assert!(c.super_id <= CFG_NULL_SUPER);
+    }
+
+    #[test]
+    fn tags_are_binary() {
+        for class in &["character", "dragon", "potion", "weapon", "tree", "building"] {
+            let c = lookup(class);
+            for &v in &c.tags {
+                assert!(v == 0.0 || v == 1.0, "tag value {v} for class {class} is not binary");
+            }
+        }
+    }
+}
