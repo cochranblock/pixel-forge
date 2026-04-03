@@ -60,7 +60,8 @@ fn ddim_step(
     };
 
     if next_amount > 1e-6 {
-        let noise = ((x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+        let noise = ((x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?
+            .clamp(-3.0, 3.0)?;
         (&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?
     } else {
         Ok(pred_clean)
@@ -122,7 +123,7 @@ pub fn cascade_sample(
     let mut images = Vec::new();
 
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = train::seeded_noise(None, cond.super_id, i, img_size, &device)?;
 
         // Phase 1: Quench foundation (structure, shapes, composition)
         for step in 0..config.quench_steps {
@@ -202,7 +203,7 @@ pub fn anvil_sample(
     println!("anvil: {} steps, {} samples, cfg={}", steps, count, cfg_scale);
 
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = train::seeded_noise(None, cond.super_id, i, img_size, &device)?;
 
         for step in 0..steps {
             let t_frac = 1.0 - (step as f32 / steps as f32);

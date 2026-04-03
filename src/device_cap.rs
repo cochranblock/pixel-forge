@@ -471,7 +471,7 @@ fn sample_tier(
         Tier::Cinder => crate::train::sample(&tier.model_path().to_string_lossy(), cond, img_size, count, steps),
         Tier::Quench => crate::train::sample_medium(&tier.model_path().to_string_lossy(), cond, img_size, count, steps),
         Tier::Anvil => {
-            crate::train::sample_anvil(&tier.model_path().to_string_lossy(), cond, img_size, count, steps)
+            crate::train::sample_anvil(&tier.model_path().to_string_lossy(), cond, img_size, count, steps, None, crate::train::DEFAULT_CFG_SCALE)
         }
     }
 }

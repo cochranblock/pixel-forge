@@ -756,12 +756,12 @@ pub fn train(config: &TrainConfig) -> Result<()> {
 
 /// Default CFG guidance scale for inference.
 /// Higher = stronger class adherence, lower = more diversity.
-pub const DEFAULT_CFG_SCALE: f64 = 1.0;
+pub const DEFAULT_CFG_SCALE: f64 = 3.0;
 
 /// Create seeded noise tensor. Same seed + class + index = same sprite every time.
 /// Inspired by No Man's Sky / Factorio deterministic world generation:
 /// a single seed cascades into reproducible content.
-fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, device: &Device) -> candle_core::Result<Tensor> {
+pub fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32, device: &Device) -> candle_core::Result<Tensor> {
     use rand::SeedableRng;
     let n = img_size as usize;
 
@@ -1045,7 +1045,8 @@ pub fn sample_seeded(
         };
 
         if next_amount > 1e-6 {
-            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?
+                .clamp(-3.0, 3.0)?;
             x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
         } else {
             x = pred_clean;
@@ -1134,7 +1135,8 @@ pub fn sample_medium_seeded(
         };
 
         if next_amount > 1e-6 {
-            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?
+                .clamp(-3.0, 3.0)?;
             x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
         } else {
             x = pred_clean;
@@ -1161,6 +1163,8 @@ pub fn sample_anvil(
     img_size: u32,
     count: u32,
     steps: usize,
+    seed: Option<u64>,
+    cfg_scale: f64,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let is_f16 = crate::quantize::is_f16(model_path);
@@ -1174,13 +1178,13 @@ pub fn sample_anvil(
 
     let params = AnvilUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
-    println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, DEFAULT_CFG_SCALE);
+    println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={cfg_scale}{pred_tag}", params, count);
 
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, 1, &device)?;
 
     let mut images = Vec::new();
     for i in 0..count {
-        let mut x = Tensor::rand(0f32, 1f32, (1, 3, img_size as usize, img_size as usize), &device)?;
+        let mut x = seeded_noise(seed, cond.super_id, i, img_size, &device)?;
 
         for step in 0..steps {
             let t_frac = 1.0 - (step as f32 / steps as f32);
@@ -1190,13 +1194,14 @@ pub fn sample_anvil(
 
             let t = Tensor::new(&[amount], &device)?;
             let pred_clean = if is_v_pred {
-                cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
+                cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
             } else {
-                cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, DEFAULT_CFG_SCALE)?
+                cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
             };
 
             if next_amount > 1e-6 {
-                let pred_noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?;
+                let pred_noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?
+                    .clamp(-3.0, 3.0)?;
                 x = ((&pred_clean * (1.0 - next_amount as f64))? + (&pred_noise * next_amount as f64)?)?;
             } else {
                 x = pred_clean;
