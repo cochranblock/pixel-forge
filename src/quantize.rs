@@ -161,6 +161,8 @@ pub fn candle_dtype_for(_path: &str) -> candle_core::DType {
 pub fn load_varmap(varmap: &mut candle_nn::VarMap, path: &str) -> Result<()> {
     use candle_core::DType;
 
+    crate::nanosign::verify_or_bail(path)?;
+
     if is_f16(path) {
         // Load raw tensors, cast f16→f32, then set in varmap
         let tensors = candle_core::safetensors::load(path, &candle_core::Device::Cpu)?;

@@ -242,8 +242,9 @@ pub fn train(config: &DiscriminatorTrainConfig) -> anyhow::Result<()> {
         }
     }
 
-    // Save
+    // Save + sign
     varmap.save(&config.output)?;
+    crate::nanosign::sign_and_log(&config.output)?;
     let file_size = std::fs::metadata(&config.output)?.len();
     println!("saved: {} ({:.1} KB)", config.output, file_size as f64 / 1024.0);
 
@@ -252,6 +253,7 @@ pub fn train(config: &DiscriminatorTrainConfig) -> anyhow::Result<()> {
 
 /// Load a trained discriminator.
 pub fn load(path: &str, device: &Device) -> anyhow::Result<(VarMap, Discriminator)> {
+    crate::nanosign::verify_or_bail(path)?;
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let model = Discriminator::new(vb)?;

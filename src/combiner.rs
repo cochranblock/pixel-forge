@@ -442,6 +442,7 @@ fn sample_with_temperature(logits: &[f32], temperature: f32, rng: &mut impl Rng)
 
 /// Load a trained Combiner from disk.
 pub fn load_combiner(path: &str, device: &Device) -> Result<(VarMap, SlotGridTransformer)> {
+    crate::nanosign::verify_or_bail(path)?;
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let model = SlotGridTransformer::new(vb)?;
@@ -455,5 +456,6 @@ pub fn save_combiner(varmap: &VarMap, path: &str) -> Result<()> {
     let tmp = target.with_extension("tmp");
     varmap.save(&tmp)?;
     std::fs::rename(&tmp, &target)?;
+    crate::nanosign::sign_and_log(path)?;
     Ok(())
 }

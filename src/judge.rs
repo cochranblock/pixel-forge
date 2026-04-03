@@ -355,6 +355,7 @@ fn sigmoid(x: f32) -> f32 {
 
 /// Load a trained Judge from disk.
 pub fn load_judge(path: &str, device: &Device) -> Result<(VarMap, MicroClassifier)> {
+    crate::nanosign::verify_or_bail(path)?;
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let model = MicroClassifier::new(vb)?;
@@ -368,5 +369,6 @@ pub fn save_judge(varmap: &VarMap, path: &str) -> Result<()> {
     let tmp = target.with_extension("tmp");
     varmap.save(&tmp)?;
     std::fs::rename(&tmp, &target)?;
+    crate::nanosign::sign_and_log(path)?;
     Ok(())
 }

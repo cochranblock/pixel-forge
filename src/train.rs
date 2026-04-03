@@ -442,18 +442,19 @@ fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<
 fn save_with_marker(varmap: &VarMap, path: &str, v_prediction: bool) -> Result<()> {
     if !v_prediction {
         varmap.save(path)?;
-        return Ok(());
+    } else {
+        // Collect all varmap tensors + the marker
+        let mut tensors = std::collections::HashMap::new();
+        let data = varmap.data().lock().unwrap();
+        for (name, var) in data.iter() {
+            tensors.insert(name.clone(), var.as_tensor().clone());
+        }
+        drop(data);
+        let marker = Tensor::new(&[1.0f32], &Device::Cpu)?;
+        tensors.insert("v_pred_marker".into(), marker);
+        candle_core::safetensors::save(&tensors, path)?;
     }
-    // Collect all varmap tensors + the marker
-    let mut tensors = std::collections::HashMap::new();
-    let data = varmap.data().lock().unwrap();
-    for (name, var) in data.iter() {
-        tensors.insert(name.clone(), var.as_tensor().clone());
-    }
-    drop(data);
-    let marker = Tensor::new(&[1.0f32], &Device::Cpu)?;
-    tensors.insert("v_pred_marker".into(), marker);
-    candle_core::safetensors::save(&tensors, path)?;
+    crate::nanosign::sign_and_log(path)?;
     Ok(())
 }
 
@@ -727,6 +728,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
         let params = AnvilUNet::param_count(&varmap);
         println!("model: Anvil (AnvilUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         if let Some(ref checkpoint) = config.resume {
+            crate::nanosign::verify_or_bail(checkpoint)?;
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
@@ -736,6 +738,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
         let params = MediumUNet::param_count(&varmap);
         println!("model: Quench (MediumUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         if let Some(ref checkpoint) = config.resume {
+            crate::nanosign::verify_or_bail(checkpoint)?;
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
@@ -745,6 +748,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
         let params = TinyUNet::param_count(&varmap);
         println!("model: Cinder (TinyUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         if let Some(ref checkpoint) = config.resume {
+            crate::nanosign::verify_or_bail(checkpoint)?;
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }

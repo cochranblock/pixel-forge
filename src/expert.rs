@@ -139,11 +139,13 @@ pub fn save_experts(varmap: &VarMap, path: &str) -> Result<()> {
     let tmp = target.with_extension("tmp");
     varmap.save(&tmp)?;
     std::fs::rename(&tmp, &target)?;
+    crate::nanosign::sign_and_log(path)?;
     Ok(())
 }
 
 /// Load experts from file.
 pub fn load_experts(path: &str, device: &Device) -> Result<(VarMap, ExpertSet)> {
+    crate::nanosign::verify_or_bail(path)?;
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let experts = ExpertSet::new(vb)?;
