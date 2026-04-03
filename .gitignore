@@ -1,4 +1,12 @@
 pixel-forge-*.safetensors*
+anvil-*.safetensors
+quench-*.safetensors
+v6-*.safetensors
+skeletons.safetensors
+*.bin.zst
+train-*.log
+data_v2_*/
+data_v3_*/
 output/
 target/
 android/target/
