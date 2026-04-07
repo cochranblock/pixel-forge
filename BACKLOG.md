@@ -2,7 +2,7 @@
 
 Prioritized. Most important at top. Max 20 items. Self-reorganizes based on recency and relevance.
 
-Last updated: 2026-04-03. Anvil v7 training restarted on lf (bs=4, no EMA, lr=5e-5). Tests added: 32 passing. P23 triple lens run — top 3 replaced with synthesis recommendations.
+Last updated: 2026-04-05. Anvil v7 training on lf (bs=4, no EMA, lr=5e-5). 77 tests passing (expanded from 32). Compression map updated f48-f79, t27-t31.
 
 ---
 

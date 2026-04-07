@@ -19,13 +19,13 @@ Train and run Gaussian diffusion models that generate 32x32 pixel art sprites. R
 ## What Exists Today
 
 - **Three model architectures** — [Cinder](src/tiny_unet.rs#L16) (1.09M params, `[32,64,64]`), [Quench](src/medium_unet.rs#L17) (5.83M params, `[64,128,128]`), [Anvil](src/anvil_unet.rs#L17) (16.9M params, `[96,192,192]`). Param counts verified at [device_cap.rs:492](src/device_cap.rs#L492).
-- **Training loop** ([src/train.rs](src/train.rs#L501)) — [Gaussian noise](src/train.rs#L432), clean prediction, [cosine schedule](src/train.rs#L91), [min-SNR weighting](src/train.rs#L100) (gamma=5), [CFG dropout](src/train.rs#L578) (10%), per-epoch checkpoints, [`--resume`](src/train.rs#L59) for fine-tuning
-- **Augmentation** — [palette swap](src/train.rs#L348), [horizontal flip](src/train.rs#L399), [90/180/270 rotation](src/train.rs#L413)
+- **Training loop** ([src/train.rs](src/train.rs#L711)) — [Gaussian noise](src/train.rs#L432), clean prediction, [cosine schedule](src/train.rs#L91), [min-SNR weighting](src/train.rs#L100) (gamma=5), [CFG dropout](src/train.rs#L586) (10%), per-epoch checkpoints, [`--resume`](src/train.rs#L59) for fine-tuning
+- **Augmentation** — [palette swap](src/train.rs#L348), [horizontal flip](src/train.rs#L399), [90/180/270 rotation](src/train.rs#L413), [brightness jitter](src/train.rs#L575) (50% chance, ×[0.8,1.2])
 - **108 class directories** mapped via [hybrid conditioning](src/class_cond.rs#L12) ([10 super-categories](src/class_cond.rs#L12) + [12 binary tags](src/class_cond.rs#L16), [lookup table](src/class_cond.rs#L84))
 - **7 color palettes** — [load_palette](src/palette.rs#L17), [quantize](src/palette.rs#L55)
 - **f16 quantization** — [quantize_f32_to_f16](src/quantize.rs#L40)
 - **GUI** — [egui app](src/app.rs) with class picker, palette selector, generation
-- **CLI** — [clap command definitions](src/main.rs#L94)
+- **CLI** — [clap command definitions](src/main.rs#L54)
 - **Distributed generation** — [cluster module](src/cluster.rs#L20) distributes work across [4 SSH nodes](src/cluster.rs#L20)
 - **NanoSign model integrity** — [BLAKE3 signing](src/nanosign.rs) on all model saves, verification on all loads. Tampered files rejected. [Spec](https://github.com/cochranblock/kova/blob/main/docs/NANOSIGN.md).
 - **11 governance documents** [baked into binary](src/main.rs#L10) via `include_str!` ([govdocs/](govdocs/))
@@ -88,8 +88,8 @@ cargo run --release -- train --data data_v3_32 --epochs 500 \
 
 The diffusion models produced blobs for weeks. Root causes found and fixed:
 1. **Uniform [0,1] noise** — signal and noise occupied the same range. Fixed: [Gaussian N(0,1) noise](src/train.rs#L432) in corruption. Commit `541720cd`.
-2. **CFG scale** — inverted outputs at high scale. Now set to [3.0](src/train.rs#L759) with proper [unconditional path](src/train.rs#L814). Commit `68f2183a`.
-3. **Noise distribution mismatch** — sampling started from uniform noise while training used Gaussian. Fixed: all sampling paths now use [seeded_noise](src/train.rs#L764) (Gaussian). Commit `68f2183a`.
+2. **CFG scale** — inverted outputs at high scale. Now set to [3.0](src/train.rs#L770) with proper [unconditional path](src/train.rs#L817). Commit `68f2183a`.
+3. **Noise distribution mismatch** — sampling started from uniform noise while training used Gaussian. Fixed: all sampling paths now use [seeded_noise](src/train.rs#L775) (Gaussian). Commit `68f2183a`.
 
 ## Commands
 
@@ -174,9 +174,9 @@ Device auto-detection: [pipeline::best_device](src/pipeline.rs#L25). Feature fla
 | GPU | Metal, CUDA, CPU fallback | [pipeline.rs:25](src/pipeline.rs#L25) |
 | Data | bincode + zstd (dataset), safetensors (models) | [train.rs:221](src/train.rs#L221) |
 | GUI | egui / eframe | [app.rs](src/app.rs) |
-| CLI | clap | [main.rs:94](src/main.rs#L94) |
+| CLI | clap | [main.rs:54](src/main.rs#L54) |
 
-~11,479 lines of Rust across 31 `.rs` files. Zero Python. Zero JavaScript.
+~12,458 lines of Rust across 31 `.rs` files. Zero Python. Zero JavaScript.
 
 ## Governance Documents
 

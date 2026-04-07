@@ -66,7 +66,7 @@ Part of the Cochran Block ecosystem. Powered by KOVA. Human direction, AI execut
 
 Kova P13 compliant. Full map in `docs/compression_map.md`.
 
-Key ranges: f0–f40 (functions), t0–t24 (types), m0–m2 (models), c0–c18 (CLI commands).
+Key ranges: f0–f79 (functions), t0–t31 (types), m0–m2 (models), c0–c23 (CLI commands), M0–M28 (modules).
 
 ## Tech Stack
 
