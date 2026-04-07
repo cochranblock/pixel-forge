@@ -938,9 +938,106 @@ fn load_skeleton_from(path: &str, class_id: u32, img_size: u32, device: &Device)
     }
 }
 
+/// Compute per-class mean images from training data, keyed by class directory name.
+/// Saves to `{data_dir}/skeletons_v2.safetensors`.
+/// Replaces the old integer-keyed `compute_skeletons` which broke when hybrid
+/// conditioning was introduced (super-categories ≠ legacy integer class IDs).
+pub fn compute_skeletons_v2(data_dir: &str, img_size: u32) -> Result<()> {
+    let data_p = Path::new(data_dir);
+    let stride = (3 * img_size * img_size) as usize;
+
+    let mut class_dirs: Vec<_> = std::fs::read_dir(data_p)?
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            e.path().is_dir() && !name.starts_with('_') && !name.starts_with('.')
+        })
+        .collect();
+    class_dirs.sort_by_key(|e| e.file_name());
+
+    let mut tensors = std::collections::HashMap::new();
+
+    for dir_entry in &class_dirs {
+        let class_name = dir_entry.file_name().to_string_lossy().to_string();
+        let class_dir = dir_entry.path();
+
+        let mut pngs: Vec<_> = std::fs::read_dir(&class_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("png"))
+            .collect();
+        pngs.sort_by_key(|e| e.file_name());
+
+        if pngs.is_empty() { continue; }
+
+        let mut sum = vec![0.0f64; stride];
+        let mut count = 0usize;
+
+        for entry in &pngs {
+            if let Some(px) = decode_png(&entry.path(), img_size) {
+                for (i, v) in px.iter().enumerate() {
+                    sum[i] += *v as f64;
+                }
+                count += 1;
+            }
+        }
+
+        if count == 0 { continue; }
+
+        let mean: Vec<f32> = sum.iter().map(|s| (*s / count as f64) as f32).collect();
+        let t = Tensor::from_vec(mean, (1usize, 3usize, img_size as usize, img_size as usize), &Device::Cpu)?;
+        tensors.insert(class_name.clone(), t);
+        println!("  {class_name}: {count} samples → skeleton");
+    }
+
+    if tensors.is_empty() {
+        anyhow::bail!("no class directories with PNGs found in {data_dir}");
+    }
+
+    let output = format!("{}/skeletons_v2.safetensors", data_dir);
+    candle_core::safetensors::save(&tensors, &output)?;
+    println!("saved: {output} ({} classes)", tensors.len());
+    Ok(())
+}
+
+/// Load skeleton for a class by name. Returns (1, 3, H, W) tensor on success.
+/// Searches standard locations: CWD, then HOME/pixel-forge.
+/// Returns None gracefully if skeletons_v2.safetensors is absent or class not found.
+pub fn load_skeleton_v2(class_name: &str, img_size: u32, device: &Device) -> Option<Tensor> {
+    let candidates: Vec<String> = {
+        let mut v = vec!["skeletons_v2.safetensors".to_string()];
+        if let Ok(home) = std::env::var("HOME") {
+            v.push(format!("{}/pixel-forge/skeletons_v2.safetensors", home));
+        }
+        v
+    };
+
+    for path in &candidates {
+        if Path::new(path).exists() {
+            if let Some(t) = load_skeleton_v2_from(path, class_name, img_size, device) {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+fn load_skeleton_v2_from(path: &str, class_name: &str, img_size: u32, device: &Device) -> Option<Tensor> {
+    let data = std::fs::read(path).ok()?;
+    let tensors = candle_core::safetensors::load_buffer(&data, device).ok()?;
+    let t = tensors.get(class_name)?;
+    let dims = t.dims();
+    if dims.len() == 4 && dims[2] == img_size as usize && dims[3] == img_size as usize {
+        Some(t.clone())
+    } else {
+        None
+    }
+}
+
 /// Create initial tensor: skeleton + noise blend instead of pure noise.
 /// skeleton_mix = 0.7 means 70% skeleton, 30% noise.
-fn skeleton_start(
+pub fn skeleton_start(
     skeleton: &Tensor,
     seed: Option<u64>,
     class_id: u32,
@@ -1033,16 +1130,30 @@ pub fn sample_seeded_cfg(
     let n = count as usize;
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
 
-    // Skeleton seeding disabled — old skeletons use legacy class IDs, not super-categories.
-    // TODO: recompute skeletons keyed by (super_id, class_name) for hybrid system.
-
     if let Some(s) = seed {
         println!("  seed: {s}");
     }
 
+    // Skeleton seeding: blend 70% class mean + 30% noise as starting point.
+    // Gives the sampler a structural head start — reduces blob artifacts on
+    // structured classes (character, building, weapon, etc.).
+    // Falls back silently to pure noise if skeletons_v2.safetensors is absent.
+    let maybe_skel = load_skeleton_v2(&cond.name, img_size, &device);
+    if maybe_skel.is_some() {
+        println!("  skeleton: class={}", cond.name);
+    }
+
     let class_id = cond.super_id;
     let init_tensors: Vec<Tensor> = (0..count)
-        .map(|i| seeded_noise(seed, class_id, i, img_size, &device).and_then(|t| t.squeeze(0)))
+        .map(|i| {
+            if let Some(ref skel) = maybe_skel {
+                skeleton_start(skel, seed, class_id, i, img_size, &device)
+                    .and_then(|t| t.squeeze(0))
+            } else {
+                seeded_noise(seed, class_id, i, img_size, &device)
+                    .and_then(|t| t.squeeze(0))
+            }
+        })
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?;
 
@@ -1143,8 +1254,21 @@ pub fn sample_medium_seeded_cfg(
         println!("  seed: {s}");
     }
 
+    let maybe_skel = load_skeleton_v2(&cond.name, img_size, &device);
+    if maybe_skel.is_some() {
+        println!("  skeleton: class={}", cond.name);
+    }
+
     let init_tensors: Vec<Tensor> = (0..count)
-        .map(|i| seeded_noise(seed, class_id, i, img_size, &device).and_then(|t| t.squeeze(0)))
+        .map(|i| {
+            if let Some(ref skel) = maybe_skel {
+                skeleton_start(skel, seed, class_id, i, img_size, &device)
+                    .and_then(|t| t.squeeze(0))
+            } else {
+                seeded_noise(seed, class_id, i, img_size, &device)
+                    .and_then(|t| t.squeeze(0))
+            }
+        })
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?;
 
@@ -1292,5 +1416,57 @@ mod tests {
             let v = cosine_schedule(t);
             assert!(v >= 0.0 && v <= 1.0, "cosine_schedule({t}) = {v} out of [0,1]");
         }
+    }
+
+    #[test]
+    fn cosine_schedule_50_steps_monotone() {
+        // DDIM-style: 50 evenly spaced steps must produce monotonically increasing noise
+        let steps = 50;
+        let mut prev = cosine_schedule(0.0);
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let cur = cosine_schedule(t);
+            assert!(cur >= prev - 1e-6, "not monotone at step {i}/{steps}: {prev} -> {cur}");
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn cosine_schedule_fine_grained_no_plateau() {
+        // Over 1000 steps, schedule should never stay flat for 100 consecutive steps
+        let steps = 1000;
+        let vals: Vec<f32> = (0..=steps).map(|i| cosine_schedule(i as f32 / steps as f32)).collect();
+        for window in vals.windows(100) {
+            let delta = window.last().unwrap() - window.first().unwrap();
+            assert!(delta > 1e-4, "plateau detected in cosine schedule");
+        }
+    }
+
+    #[test]
+    fn min_snr_weight_zero_gamma_returns_one() {
+        assert_eq!(super::min_snr_weight(0.5, 0.0), 1.0);
+        assert_eq!(super::min_snr_weight(0.5, -1.0), 1.0);
+    }
+
+    #[test]
+    fn min_snr_weight_in_valid_range() {
+        for i in 1..=99 {
+            let t = i as f32 / 100.0;
+            let w = super::min_snr_weight(t, 5.0);
+            assert!(w >= 0.01 && w <= 1.0, "min_snr_weight({t}) = {w} out of [0.01, 1.0]");
+        }
+    }
+
+    #[test]
+    fn min_snr_weight_extremes() {
+        // Near t=0 (low noise): SNR is very high → gamma/SNR is tiny → floor at 0.01
+        let w_low = super::min_snr_weight(0.01, 5.0);
+        assert!(w_low >= 0.01, "low noise weight below floor, got {w_low}");
+        // Near t=0.5 (mid noise): balanced weight
+        let w_mid = super::min_snr_weight(0.5, 5.0);
+        assert!(w_mid > 0.01 && w_mid <= 1.0, "mid noise weight out of range: {w_mid}");
+        // Near t=1 (high noise): SNR is low, weight should be high (capped at gamma)
+        let w_high = super::min_snr_weight(0.99, 5.0);
+        assert!(w_high >= 0.01, "high noise weight below floor, got {w_high}");
     }
 }

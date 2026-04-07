@@ -334,4 +334,128 @@ mod tests {
         let p = load_palette("gameboy").unwrap();
         assert_eq!(p.len(), 4);
     }
+
+    #[test]
+    fn quantize_single_color_palette() {
+        let palette: Vec<Color> = vec![[128, 128, 128, 255]];
+        let mut img = RgbaImage::new(4, 4);
+        for x in 0..4 {
+            for y in 0..4 {
+                img.put_pixel(x, y, Rgba([x as u8 * 60, y as u8 * 60, 100, 255]));
+            }
+        }
+        let out = quantize(&img, &palette);
+        for pixel in out.pixels() {
+            assert_eq!(*pixel, Rgba([128, 128, 128, 255]));
+        }
+    }
+
+    #[test]
+    fn quantize_256_color_palette() {
+        // SNES has 256 colors — verify it works without panic
+        let palette = snes_palette();
+        assert_eq!(palette.len(), 256);
+        let mut img = RgbaImage::new(8, 8);
+        for x in 0..8 {
+            for y in 0..8 {
+                img.put_pixel(x, y, Rgba([x as u8 * 32, y as u8 * 32, 128, 255]));
+            }
+        }
+        let out = quantize(&img, &palette);
+        // Every output pixel must be a palette member
+        for pixel in out.pixels() {
+            let c = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            assert!(palette.contains(&c), "pixel {:?} not in SNES palette", c);
+        }
+    }
+
+    #[test]
+    fn quantize_all_transparent_image() {
+        let palette: Vec<Color> = vec![[255, 0, 0, 255]];
+        let mut img = RgbaImage::new(3, 3);
+        for x in 0..3 {
+            for y in 0..3 {
+                img.put_pixel(x, y, Rgba([100, 200, 50, 0])); // alpha=0
+            }
+        }
+        let out = quantize(&img, &palette);
+        for pixel in out.pixels() {
+            assert_eq!(pixel[3], 0, "transparent pixels must stay transparent");
+        }
+    }
+
+    #[test]
+    fn quantize_semi_transparent_snaps() {
+        // Alpha 127 is < 128 threshold → treated as transparent
+        let palette: Vec<Color> = vec![[255, 0, 0, 255]];
+        let mut img = RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, Rgba([50, 50, 50, 127]));
+        let out = quantize(&img, &palette);
+        assert_eq!(out.get_pixel(0, 0)[3], 0);
+    }
+
+    #[test]
+    fn quantize_alpha_128_is_opaque() {
+        // Alpha 128 is >= threshold → should be quantized to palette
+        let palette: Vec<Color> = vec![[255, 0, 0, 255]];
+        let mut img = RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, Rgba([50, 50, 50, 128]));
+        let out = quantize(&img, &palette);
+        assert_eq!(*out.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn pico8_has_16_colors() {
+        let p = load_palette("pico8").unwrap();
+        assert_eq!(p.len(), 16);
+    }
+
+    #[test]
+    fn endesga32_has_32_colors() {
+        let p = load_palette("endesga32").unwrap();
+        assert_eq!(p.len(), 32);
+    }
+
+    #[test]
+    fn nes_palette_count() {
+        let p = load_palette("nes").unwrap();
+        assert_eq!(p.len(), 54);
+    }
+
+    #[test]
+    fn palette_alias_gb() {
+        let p = load_palette("gb").unwrap();
+        assert_eq!(p.len(), 4);
+    }
+
+    #[test]
+    fn palette_alias_e32() {
+        let p = load_palette("e32").unwrap();
+        assert_eq!(p.len(), 32);
+    }
+
+    #[test]
+    fn palette_alias_pico() {
+        let p = load_palette("pico").unwrap();
+        assert_eq!(p.len(), 16);
+    }
+
+    #[test]
+    fn all_palette_colors_are_opaque() {
+        for name in &["stardew", "starbound", "snes", "nes", "gameboy", "endesga32", "pico8"] {
+            let p = load_palette(name).unwrap();
+            for color in &p {
+                assert_eq!(color[3], 255, "palette {name} has non-opaque color: {:?}", color);
+            }
+        }
+    }
+
+    #[test]
+    fn hex_to_rgba_correctness() {
+        assert_eq!(hex_to_rgba(0xFF0000), [255, 0, 0, 255]);
+        assert_eq!(hex_to_rgba(0x00FF00), [0, 255, 0, 255]);
+        assert_eq!(hex_to_rgba(0x0000FF), [0, 0, 255, 255]);
+        assert_eq!(hex_to_rgba(0x000000), [0, 0, 0, 255]);
+        assert_eq!(hex_to_rgba(0xFFFFFF), [255, 255, 255, 255]);
+    }
 }

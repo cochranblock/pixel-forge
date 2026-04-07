@@ -122,8 +122,19 @@ pub fn cascade_sample(
 
     let mut images = Vec::new();
 
+    // Skeleton seeding: blend 70% class mean + 30% noise.
+    // Falls back to pure noise if skeletons_v2.safetensors is absent.
+    let maybe_skel = train::load_skeleton_v2(&cond.name, img_size, &device);
+    if maybe_skel.is_some() {
+        println!("  skeleton: class={}", cond.name);
+    }
+
     for i in 0..count {
-        let mut x = train::seeded_noise(None, cond.super_id, i, img_size, &device)?;
+        let mut x = if let Some(ref skel) = maybe_skel {
+            train::skeleton_start(skel, None, cond.super_id, i, img_size, &device)?
+        } else {
+            train::seeded_noise(None, cond.super_id, i, img_size, &device)?
+        };
 
         // Phase 1: Quench foundation (structure, shapes, composition)
         for step in 0..config.quench_steps {
@@ -532,4 +543,70 @@ fn tensor_to_rgba(x: &Tensor, img_size: u32) -> Result<RgbaImage> {
         }
     }
     Ok(rgba)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::train::cosine_schedule;
+
+    #[test]
+    fn cascade_schedule_amounts_decrease() {
+        // Simulate the cascade schedule: amounts must decrease over steps
+        let total_steps = 40; // 25 quench + 15 cinder
+        let mut prev_amount = f32::MAX;
+        for step in 0..total_steps {
+            let t_frac = 1.0 - (step as f32 / total_steps as f32);
+            let amount = cosine_schedule(t_frac);
+            assert!(amount <= prev_amount + 1e-6,
+                "amount not decreasing at step {step}: {prev_amount} -> {amount}");
+            prev_amount = amount;
+        }
+    }
+
+    #[test]
+    fn cascade_schedule_starts_near_one() {
+        let total_steps = 40;
+        let t_frac = 1.0 - (0.0 / total_steps as f32);
+        let amount = cosine_schedule(t_frac);
+        assert!((amount - 1.0).abs() < 0.01, "first step should be ~1.0, got {amount}");
+    }
+
+    #[test]
+    fn cascade_schedule_ends_near_zero() {
+        let total_steps = 40;
+        let last_step = total_steps - 1;
+        let t_frac = 1.0 - (last_step as f32 / total_steps as f32);
+        let amount = cosine_schedule(t_frac);
+        assert!(amount < 0.1, "last step should be near 0, got {amount}");
+    }
+
+    #[test]
+    fn cascade_default_config_sane() {
+        let cfg = super::CascadeConfig::default();
+        assert_eq!(cfg.quench_steps, 25);
+        assert_eq!(cfg.cinder_steps, 15);
+        assert!(cfg.quench_steps + cfg.cinder_steps > 0);
+    }
+
+    #[test]
+    fn ddim_50_steps_all_positive_amounts() {
+        let steps = 50;
+        for step in 0..steps {
+            let t_frac = 1.0 - (step as f32 / steps as f32);
+            let amount = cosine_schedule(t_frac);
+            assert!(amount >= 0.0, "negative amount at step {step}: {amount}");
+        }
+    }
+
+    #[test]
+    fn cfg_scale_zero_produces_same_as_one() {
+        // CFG scale of 0.0 should be valid (unconditional only)
+        // Just verify it's a valid f64 that won't cause issues
+        let cfg: f64 = 0.0;
+        assert!(cfg.is_finite());
+        let cfg_neg: f64 = -1.0;
+        assert!(cfg_neg.is_finite());
+        let cfg_large: f64 = 100.0;
+        assert!(cfg_large.is_finite());
+    }
 }

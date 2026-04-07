@@ -181,6 +181,56 @@ mod tests {
     }
 
     #[test]
+    fn corrupted_file_with_valid_magic_rejected() {
+        // File has NSIG magic but garbage hash — should fail verification
+        let payload = b"model weights here";
+        let path = write_tmp(payload);
+        // Manually append NSIG + wrong hash
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(MAGIC).unwrap();
+        f.write_all(&[0xDE; 32]).unwrap(); // garbage hash
+        drop(f);
+        let result = verify(&path).unwrap();
+        assert!(matches!(result, VerifyResult::Failed { .. }));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn empty_file_is_unsigned() {
+        let path = write_tmp(b"");
+        let result = verify(&path).unwrap();
+        assert!(matches!(result, VerifyResult::Unsigned));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn file_smaller_than_sig_len_is_unsigned() {
+        let path = write_tmp(b"tiny");
+        let result = verify(&path).unwrap();
+        assert!(matches!(result, VerifyResult::Unsigned));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn strip_idempotent_on_unsigned() {
+        let payload = b"no signature here";
+        let path = write_tmp(payload);
+        strip(&path).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(data, payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn sign_and_log_produces_verifiable_file() {
+        let path = write_tmp(b"model data for log test");
+        sign_and_log(path.to_str().unwrap()).unwrap();
+        let result = verify(&path).unwrap();
+        assert!(matches!(result, VerifyResult::Verified(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn double_sign_is_detected_as_tampered() {
         // Signing a signed file appends a second sig over the first sig+payload,
         // so the inner verify should detect the hash mismatch.

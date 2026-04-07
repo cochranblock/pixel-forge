@@ -52,18 +52,20 @@ pub mod super_cat {
 /// Class conditioning: super-category + binary tags.
 #[derive(Clone, Debug)]
 pub struct ClassCond {
+    /// Class directory name used for skeleton lookup and display.
+    pub name: String,
     pub super_id: u32,
     pub tags: [f32; NUM_TAGS],
 }
 
 impl ClassCond {
-    pub fn new(super_id: u32, tags: [f32; NUM_TAGS]) -> Self {
-        Self { super_id, tags }
+    pub fn new(name: impl Into<String>, super_id: u32, tags: [f32; NUM_TAGS]) -> Self {
+        Self { name: name.into(), super_id, tags }
     }
 
     /// CFG null conditioning (unconditional).
     pub fn null() -> Self {
-        Self { super_id: CFG_NULL_SUPER, tags: CFG_NULL_TAGS }
+        Self { name: "__null__".into(), super_id: CFG_NULL_SUPER, tags: CFG_NULL_TAGS }
     }
 }
 
@@ -210,7 +212,7 @@ pub fn lookup(name: &str) -> ClassCond {
         // Unknown — default to ui_fx, no tags
         _ => (sc::UI_FX, tags(&[])),
     };
-    ClassCond::new(s, t)
+    ClassCond::new(name, s, t)
 }
 
 /// Super-category display name.
@@ -308,6 +310,21 @@ mod tests {
         let c = ClassCond::null();
         assert_eq!(c.super_id, CFG_NULL_SUPER);
         assert_eq!(c.tags, CFG_NULL_TAGS);
+        assert_eq!(c.name, "__null__");
+    }
+
+    #[test]
+    fn lookup_stores_name() {
+        for class in &["character", "dragon", "potion", "weapon", "tree", "building"] {
+            let c = lookup(class);
+            assert_eq!(&c.name, class, "ClassCond.name should match the looked-up class");
+        }
+    }
+
+    #[test]
+    fn unknown_class_stores_name() {
+        let c = lookup("weird_unknown_class");
+        assert_eq!(c.name, "weird_unknown_class");
     }
 
     #[test]
@@ -357,6 +374,66 @@ mod tests {
             for &v in &c.tags {
                 assert!(v == 0.0 || v == 1.0, "tag value {v} for class {class} is not binary");
             }
+        }
+    }
+
+    #[test]
+    fn cfg_null_super_is_beyond_real_categories() {
+        assert_eq!(CFG_NULL_SUPER, NUM_SUPER as u32);
+        assert!(CFG_NULL_SUPER > super_cat::UI_FX);
+    }
+
+    #[test]
+    fn cfg_null_tags_are_all_zero() {
+        for &v in &CFG_NULL_TAGS {
+            assert_eq!(v, 0.0);
+        }
+    }
+
+    #[test]
+    fn all_super_categories_in_range() {
+        let supers = [
+            super_cat::HUMANOID, super_cat::CREATURE, super_cat::MONSTER,
+            super_cat::WEAPON, super_cat::EQUIPMENT, super_cat::CONSUMABLE,
+            super_cat::TERRAIN, super_cat::NATURE, super_cat::STRUCTURE,
+            super_cat::UI_FX,
+        ];
+        for &s in &supers {
+            assert!(s < NUM_SUPER as u32, "super_cat {s} out of range");
+        }
+        // All unique
+        let mut sorted = supers.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), NUM_SUPER);
+    }
+
+    #[test]
+    fn every_lookup_super_in_range() {
+        // Spot check a wide range of known classes
+        for class in &[
+            "character", "elf", "dragon", "slime", "sword", "armor",
+            "potion", "terrain", "tree", "building", "ui", "effect",
+            "cat_domestic", "horse", "orc", "demon", "gem_treasure",
+        ] {
+            let c = lookup(class);
+            assert!(c.super_id <= CFG_NULL_SUPER, "class {class} super {}", c.super_id);
+        }
+    }
+
+    #[test]
+    fn nature_classes_have_nature_tag() {
+        for class in &["tree", "tree_deciduous", "bush_flower"] {
+            let c = lookup(class);
+            assert_eq!(c.tags[tag::NATURE], 1.0, "{class} missing NATURE tag");
+        }
+    }
+
+    #[test]
+    fn hostile_classes_have_hostile_tag() {
+        for class in &["dragon", "demon", "orc"] {
+            let c = lookup(class);
+            assert_eq!(c.tags[tag::HOSTILE], 1.0, "{class} missing HOSTILE tag");
         }
     }
 }

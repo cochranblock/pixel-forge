@@ -534,6 +534,115 @@ pub fn sync_models(host: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mock_node(name: &str, host: &str, throughput: f64) -> NodeProfile {
+        NodeProfile {
+            name: name.to_string(),
+            host: host.to_string(),
+            reachable: true,
+            profile: Some(DeviceProfile {
+                tier: Tier::Cinder,
+                cinder_ms: 10.0,
+                quench_ms: None,
+                ram_mb: 4096,
+                backend: crate::device_cap::Backend::Cpu,
+                os_version: "test".to_string(),
+            }),
+            throughput,
+        }
+    }
+
+    fn mock_cluster(remotes: Vec<NodeProfile>) -> ClusterState {
+        let total_throughput = 1.0 + remotes.iter().map(|n| n.throughput).sum::<f64>();
+        ClusterState {
+            local: mock_node("local", "local", 1.0),
+            remotes,
+            total_throughput,
+        }
+    }
+
+    #[test]
+    fn distribute_single_node() {
+        let cluster = mock_cluster(vec![]);
+        let work = cluster.distribute(10);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].count, 10);
+    }
+
+    #[test]
+    fn distribute_preserves_total() {
+        let cluster = mock_cluster(vec![
+            mock_node("gd", "gd", 3.0),
+            mock_node("bt", "bt", 1.0),
+        ]);
+        let work = cluster.distribute(100);
+        let total: u32 = work.iter().map(|w| w.count).sum();
+        assert_eq!(total, 100, "distribution must sum to requested count");
+    }
+
+    #[test]
+    fn distribute_proportional_to_throughput() {
+        let cluster = mock_cluster(vec![
+            mock_node("fast", "fast", 9.0), // 9x local
+        ]);
+        let work = cluster.distribute(100);
+        let fast = work.iter().find(|w| w.name == "fast").unwrap();
+        // fast has 9.0 / 10.0 total → should get ~90
+        assert!(fast.count >= 85 && fast.count <= 95, "fast got {}", fast.count);
+    }
+
+    #[test]
+    fn distribute_zero_count() {
+        let cluster = mock_cluster(vec![]);
+        let work = cluster.distribute(0);
+        // Should not panic, may be empty
+        let total: u32 = work.iter().map(|w| w.count).sum();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn active_nodes_excludes_unreachable() {
+        let mut cluster = mock_cluster(vec![
+            mock_node("gd", "gd", 5.0),
+        ]);
+        cluster.remotes[0].reachable = false;
+        let active = cluster.active_nodes();
+        assert_eq!(active.len(), 1); // only local
+    }
+
+    #[test]
+    fn active_nodes_sorted_by_throughput() {
+        let cluster = mock_cluster(vec![
+            mock_node("slow", "slow", 0.5),
+            mock_node("fast", "fast", 10.0),
+        ]);
+        let active = cluster.active_nodes();
+        assert_eq!(active[0].name, "fast");
+    }
+
+    #[test]
+    fn estimate_throughput_positive() {
+        let profile = DeviceProfile {
+            tier: Tier::Cinder,
+            cinder_ms: 10.0,
+            quench_ms: None,
+            ram_mb: 4096,
+            backend: crate::device_cap::Backend::Cpu,
+            os_version: "test".to_string(),
+        };
+        let tp = estimate_throughput(&profile);
+        assert!(tp > 0.0, "throughput should be positive, got {tp}");
+    }
+
+    #[test]
+    fn nodes_constant_has_four_entries() {
+        assert_eq!(NODES.len(), 4);
+    }
+}
+
 /// Sync models to all nodes in parallel.
 pub fn sync_models_all() -> Result<()> {
     println!("syncing models to all nodes...");

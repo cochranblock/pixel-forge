@@ -57,6 +57,38 @@ Tokenization for traceability. Kova P13 compliant.
 | f45 | detail_only_sample | moe |
 | f46 | ingest_gemini | main |
 | f47 | prep_stages | main |
+| f48 | sign | nanosign |
+| f49 | verify | nanosign |
+| f50 | strip | nanosign |
+| f51 | verify_or_bail | nanosign |
+| f52 | sign_and_log | nanosign |
+| f53 | detect_v_pred | train |
+| f54 | seeded_noise | train |
+| f55 | eps_to_clean | train |
+| f56 | cfg_denoise | train |
+| f57 | cfg_denoise_vpred | train |
+| f58 | compute_skeletons_v2 | train |
+| f59 | load_skeleton_v2 | train |
+| f60 | skeleton_start | train |
+| f61 | cond_tensors | train |
+| f62 | sample_seeded | train |
+| f63 | sample_seeded_cfg | train |
+| f64 | sample_medium_seeded | train |
+| f65 | sample_medium_seeded_cfg | train |
+| f66 | sample_anvil | train |
+| f67 | anvil_sample | moe |
+| f68 | cascade_with_gate | moe |
+| f69 | anvil_with_gate | moe |
+| f70 | stage_cascade_sample | moe |
+| f71 | detail_only_sample | moe |
+| f72 | four_dir_sheet | relight |
+| f73 | compute_structure | relight |
+| f74 | relight | relight |
+| f75 | walk_pngs | lib |
+| f76 | list_palettes | palette |
+| f77 | model_ready | pipeline |
+| f78 | download_model | pipeline |
+| f79 | generate (pipeline) | pipeline |
 
 ## Types (tN)
 
@@ -89,6 +121,11 @@ Tokenization for traceability. Kova P13 compliant.
 | t24 | DiscriminatorTrainConfig | discriminator |
 | t25 | ClassCond | class_cond |
 | t26 | ClassConditioner | tiny_unet/medium_unet/anvil_unet |
+| t27 | VerifyResult | nanosign |
+| t28 | CascadeConfig | moe |
+| t29 | WorkUnit | cluster |
+| t30 | NodeDef | cluster |
+| t31 | LightDir | relight |
 
 ## Models (mN)
 
@@ -129,6 +166,8 @@ Tokenization for traceability. Kova P13 compliant.
 | M24 | class_cond | Hybrid class conditioning (super-cat + tags) |
 | M25 | relight | 4-directional sprites from SDF + normals |
 | M26 | quantize | f32 → f16 model quantization |
+| M27 | nanosign | BLAKE3 model integrity signing |
+| M28 | relight | 4-directional sprites from SDF + normals |
 
 ## CLI Commands (cN)
 
