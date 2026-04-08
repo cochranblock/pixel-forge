@@ -8,6 +8,80 @@
 
 ---
 
+## Human Revelations — Invented Techniques
+
+*Novel ideas that came from human insight, not AI suggestion. These are original contributions to the field.*
+
+### NanoSign Model Integrity (April 2026)
+
+**Invention:** A 36-byte model signing standard (4-byte magic `NSIG` + 32-byte BLAKE3 hash) appended to any model file format, verified on every load — tampered files rejected, unsigned files pass for backward compatibility.
+
+**The Problem:** AI model files (`.safetensors`, `.onnx`, `.gguf`) are treated as trusted inputs. No framework verifies whether a model file has been modified after training. Supply chain attacks on model weights are invisible — a poisoned model produces subtly wrong output with no error.
+
+**The Insight:** Every executable on modern operating systems is code-signed. Model files are executable logic (they determine program behavior at runtime) but have zero integrity verification. The fix doesn't need PKI or certificates — just append a hash of the file's own contents and check it on load. 36 bytes. Works with any format because it's appended, not embedded.
+
+**The Technique:**
+1. On save: compute BLAKE3 hash of file contents, append `NSIG` + 32 bytes
+2. On load: read last 36 bytes, check for `NSIG` magic, verify hash matches file contents minus trailer
+3. Unsigned files (no `NSIG` magic): pass silently for backward compatibility
+4. Tampered files (hash mismatch): hard reject with error
+
+**Result:** Every model file in the pixel-forge pipeline is integrity-verified on load. Zero performance cost (BLAKE3 is fast). Zero format dependency. Works with safetensors, ONNX, GGUF, or any binary format.
+
+**Named:** NanoSign
+**Commit:** `92748094`
+**Origin:** Michael Cochran's defense background — weapons systems verify firmware integrity before execution. AI models should have the same guarantee. Designed as an open standard, published at `kova/docs/NANOSIGN.md`.
+
+### MoE Cascade Pipeline — Cinder to Quench to Anvil (March 2026)
+
+**Invention:** A tiered diffusion pipeline where a tiny model (Cinder, 1.09M params) generates rough output, a medium model (Quench, 5.83M params) refines it, and an XL model (Anvil, 16.9M params) adds detail — each tier uses the previous tier's output as its starting noise rather than pure random noise.
+
+**The Problem:** Diffusion models are all-or-nothing. A 1M param model produces blurry output. A 17M param model produces good output but takes 10x longer and can't run on phones. There's no way to get "good enough for mobile, great on desktop" from one pipeline.
+
+**The Insight:** Image generation is like painting — you don't start with details. Sketch the shape, block in color, then refine. Each stage needs less intelligence than the previous one because it has more structure to work with. A tiny model can sketch. A medium model can color. An XL model can detail. Chain them.
+
+**The Technique:**
+1. Cinder (1.09M, 4.2MB): generates 32x32 rough sprite from pure noise
+2. Quench (5.83M, 22MB): takes Cinder output as starting point, refines with fewer diffusion steps
+3. Anvil (16.9M, 64MB): takes Quench output as starting point, adds fine detail
+4. On mobile: Cinder only (fast, small). On desktop: full cascade. User never chooses — device detection picks the tier.
+5. Expert heads (shape/color/detail/class) provide MoE routing within tiers
+
+**Result:** Mobile gets sprites in <1 second from Cinder alone. Desktop gets full cascade quality. Same training data, same pipeline, three quality tiers. No cloud API needed.
+
+**Named:** Cinder-Quench-Anvil Cascade
+**Commit:** See March 2026 cascade entries
+**Origin:** Art school fundamentals — every painting teacher says "block in big shapes first, details last." Applied to diffusion model architecture as a tiered pipeline.
+
+### Hybrid Class Conditioning (March 2026)
+
+**Invention:** Replace integer class labels with a two-part conditioning system: 10 super-categories (small embedding table) + 12 binary tags (alive, humanoid, held_item, etc.) — new classes are just new tag combinations, zero retraining needed.
+
+**The Problem:** Standard class-conditioned diffusion uses integer labels (class 0 = sword, class 1 = dragon, ...). Adding a new class requires retraining the entire model. Scaling from 16 to 108 classes means the embedding table grows linearly and every new class needs training examples.
+
+**The Insight:** Game items aren't unique categories — they're combinations of properties. A dragon is [alive, hostile, magical]. A magic sword is [held_item, magical]. A robot is [alive, tech, hostile]. If the model learns properties instead of categories, new classes are just new property combinations — no retraining.
+
+**The Technique:**
+1. 10 super-categories: character, monster, weapon, armor, nature, building, food, vehicle, furniture, ui
+2. 12 binary tags: alive, humanoid, held_item, worn, nature, built, magical, tech, small, hostile, edible, ui
+3. `class_cond.rs`: lookup table mapping 108 class names to super-category + tag vector
+4. Model trains on (super_category_embedding + tag_vector), not integer labels
+5. New class = new lookup entry, zero weight changes
+
+**Result:** Scaled from 16 to 108 classes without retraining. New classes (e.g., "cybernetic_owl") just need a tag combination [alive, tech, small] and super-category [monster].
+
+**Named:** Hybrid Class Conditioning
+**Commit:** `8e72544c`
+**Origin:** Game design taxonomy — every RPG item system uses categories + properties, not flat lists. Applied to diffusion model conditioning.
+
+### 2026-04-08 — Human Revelations Documentation Pass
+
+**What:** Documented novel human-invented techniques across the full CochranBlock portfolio. Added Human Revelations section with NanoSign, MoE Cascade Pipeline, and Hybrid Class Conditioning.
+**Commit:** See git log
+**AI Role:** AI formatted and wrote the sections. Human identified which techniques were genuinely novel, provided the origin stories, and directed the documentation pass.
+
+---
+
 ## Entries
 
 ### 2026-04-03 — NanoSign Model Integrity + Documentation P23
