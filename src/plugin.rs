@@ -47,7 +47,7 @@ const CLASS_NAMES: &[&str] = &[
 ];
 
 const PALETTE_NAMES: &[&str] = &[
-    "stardew", "starbound", "snes", "nes", "gameboy", "pico8", "endesga",
+    "stardew", "starbound", "snes", "nes", "gameboy", "pico8", "endesga32",
 ];
 
 /// Handle a single plugin request. Called by `pixel-forge plugin`.

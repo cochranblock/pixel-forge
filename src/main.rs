@@ -543,6 +543,9 @@ enum Cmd {
         /// CFG guidance scale. Higher = stronger class adherence.
         #[arg(long, default_value_t = 3.0)]
         cfg: f64,
+        /// Seed for deterministic generation. Same seed = same sprite.
+        #[arg(long)]
+        seed: Option<u64>,
     },
     /// Upscale 16x16 PNGs from data/ to 32x32 in data_v2_32/ (nearest-neighbor).
     Upscale {
@@ -1105,6 +1108,18 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             checkpoint_every,
             resume,
         } => {
+            // Fix: default output to correct model filename based on tier
+            let output = if output == "pixel-forge-cinder.safetensors" {
+                if anvil {
+                    "pixel-forge-anvil.safetensors".to_string()
+                } else if medium {
+                    "pixel-forge-quench.safetensors".to_string()
+                } else {
+                    output
+                }
+            } else {
+                output
+            };
             let config = train::TrainConfig {
                 data_dir: data,
                 output,
@@ -1679,7 +1694,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             };
             println!("done: {out}");
         }
-        Cmd::Cascade { class, quench, cinder, experts, count, quench_steps, cinder_steps, palette: palette_name, output, cfg } => {
+        Cmd::Cascade { class, quench, cinder, experts, count, quench_steps, cinder_steps, palette: palette_name, output, cfg, seed } => {
             let cond = class_cond::lookup(&class.to_lowercase());
 
             let pal = palette::load_palette(&palette_name)?;
@@ -1694,7 +1709,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 cinder_steps,
             };
 
-            let raw_images = moe::cascade_sample(&quench, &cinder, experts_path, &cond, 32, count, &config, cfg)?;
+            let raw_images = moe::cascade_sample(&quench, &cinder, experts_path, &cond, 32, count, &config, cfg, seed)?;
 
             let processed: Vec<image::RgbaImage> = raw_images
                 .into_iter()

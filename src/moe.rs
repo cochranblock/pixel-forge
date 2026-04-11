@@ -78,6 +78,7 @@ pub fn cascade_sample(
     count: u32,
     config: &CascadeConfig,
     cfg_scale: f64,
+    seed: Option<u64>,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
     let total_steps = config.quench_steps + config.cinder_steps;
@@ -131,9 +132,9 @@ pub fn cascade_sample(
 
     for i in 0..count {
         let mut x = if let Some(ref skel) = maybe_skel {
-            train::skeleton_start(skel, None, cond.super_id, i, img_size, &device)?
+            train::skeleton_start(skel, seed, cond.super_id, i, img_size, &device)?
         } else {
-            train::seeded_noise(None, cond.super_id, i, img_size, &device)?
+            train::seeded_noise(seed, cond.super_id, i, img_size, &device)?
         };
 
         // Phase 1: Quench foundation (structure, shapes, composition)
@@ -263,7 +264,7 @@ pub fn cascade_with_gate(
         let sprites = cascade_sample(
             quench_path, cinder_path, experts_path,
             cond, img_size, batch, config,
-            train::DEFAULT_CFG_SCALE,
+            train::DEFAULT_CFG_SCALE, None,
         )?;
 
         for sprite in sprites {

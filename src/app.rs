@@ -916,7 +916,7 @@ fn cascade_for_display(
         &cinder_path.to_string_lossy(),
         experts_path.as_deref(),
         cond, img_size, count, &config,
-        crate::train::DEFAULT_CFG_SCALE,
+        crate::train::DEFAULT_CFG_SCALE, None,
     )?;
 
     let processed: Vec<image::RgbaImage> = raw_images
