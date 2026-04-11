@@ -145,6 +145,9 @@ enum Cmd {
         /// Sponge Mesh: auto-retry on NaN/plateau (max 3 retries).
         #[arg(long)]
         sponge: bool,
+        /// GPU backend: auto, metal, cuda, vulkan, cpu.
+        #[arg(long, default_value = "auto")]
+        device: String,
     },
     /// Ingest Gemini-generated sprite sheets into training data.
     /// Slices grids, removes backgrounds, downscales to 32x32, sorts by filename.
@@ -563,6 +566,25 @@ enum Cmd {
     Govdocs {
         /// Document to display: sbom, security, ssdf, fips, cmmc, privacy, supply-chain, accessibility, fedramp, itar-ear, federal-use-cases. Omit for index.
         doc: Option<String>,
+    },
+    /// Distributed training: each GPU trains a different model tier.
+    /// lf (3070 8GB) → Anvil, bt (5700 XT 8GB) → Quench, gd (3050 Ti 4GB) → Cinder.
+    TrainFleet {
+        /// Path to training data directory.
+        #[arg(short, long, default_value = "data_v3_32")]
+        data: String,
+        /// Number of training epochs.
+        #[arg(short, long, default_value_t = 100)]
+        epochs: usize,
+        /// Learning rate.
+        #[arg(short, long, default_value_t = 2e-4)]
+        lr: f64,
+        /// Only run on these nodes (comma-separated: lf,bt,gd). Default: all reachable.
+        #[arg(long)]
+        nodes: Option<String>,
+        /// Dry run: show what would be dispatched, don't start.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Desktop generation: Anvil single-stage (needs 3+ GB VRAM).
     Anvil {
@@ -1118,7 +1140,30 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             checkpoint_every,
             resume,
             sponge,
+            device,
         } => {
+            // Vulkan backend: use any-gpu for AMD GPUs
+            #[cfg(feature = "vulkan")]
+            if device == "vulkan" {
+                let output = if output == "pixel-forge-cinder.safetensors" {
+                    if anvil {
+                        "pixel-forge-anvil.safetensors".to_string()
+                    } else if medium {
+                        "pixel-forge-quench.safetensors".to_string()
+                    } else {
+                        output
+                    }
+                } else {
+                    output
+                };
+                vulkan_backend::vulkan_train(&data, &output, epochs, batch_size as u32, lr)?;
+                return Ok(());
+            }
+            #[cfg(not(feature = "vulkan"))]
+            if device == "vulkan" {
+                anyhow::bail!("vulkan backend requires --features vulkan. Rebuild with: cargo build --release --features vulkan --no-default-features");
+            }
+
             // Fix: default output to correct model filename based on tier
             let output = if output == "pixel-forge-cinder.safetensors" {
                 if anvil {
@@ -1852,6 +1897,105 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 sheet_img.save(&output)?;
             }
             println!("saved: {output}");
+        }
+        Cmd::TrainFleet { data, epochs, lr, nodes, dry_run } => {
+            // Distributed training: each GPU trains a different model tier.
+            // lf (RTX 3070 8GB)    → Anvil (16.9M params)
+            // bt (RX 5700 XT 8GB)  → Quench (5.83M params) via Vulkan
+            // gd (RTX 3050 Ti 4GB) → Cinder (1.09M params)
+
+            struct FleetJob {
+                node: &'static str,
+                host: &'static str,
+                model_tier: &'static str,
+                model_flag: &'static str,
+                output: &'static str,
+                batch_size: u32,
+                features: &'static str,
+                device_flag: &'static str,
+            }
+
+            let jobs = vec![
+                FleetJob {
+                    node: "lf", host: "lf", model_tier: "Anvil",
+                    model_flag: "--anvil", output: "pixel-forge-anvil.safetensors",
+                    batch_size: 4, features: "cuda", device_flag: "",
+                },
+                FleetJob {
+                    node: "bt", host: "bt", model_tier: "Quench",
+                    model_flag: "--medium", output: "pixel-forge-quench.safetensors",
+                    batch_size: 8, features: "vulkan", device_flag: "--device vulkan",
+                },
+                FleetJob {
+                    node: "gd", host: "gd", model_tier: "Cinder",
+                    model_flag: "", output: "pixel-forge-cinder.safetensors",
+                    batch_size: 16, features: "cuda", device_flag: "",
+                },
+            ];
+
+            let filter: Option<Vec<&str>> = nodes.as_ref().map(|n| n.split(',').collect());
+
+            println!("train-fleet: dispatching to {} nodes", jobs.len());
+            println!("  data={data}  epochs={epochs}  lr={lr:.1e}");
+            println!();
+
+            let mut handles = Vec::new();
+
+            for job in &jobs {
+                if let Some(ref f) = filter {
+                    if !f.contains(&job.node) { continue; }
+                }
+
+                let cmd = format!(
+                    "cd ~/pixel-forge && ./target/release/pixel-forge train \
+                     --data {data} {} --epochs {epochs} --lr {lr} \
+                     --batch-size {} --no-ema --sponge \
+                     -o {} {device} 2>&1",
+                    job.model_flag, job.batch_size, job.output,
+                    device = job.device_flag,
+                );
+
+                println!("  {} ({}):", job.node, job.model_tier);
+                println!("    gpu: {}", match job.node {
+                    "lf" => "RTX 3070 8GB (CUDA)",
+                    "bt" => "RX 5700 XT 8GB (Vulkan/any-gpu)",
+                    "gd" => "RTX 3050 Ti 4GB (CUDA)",
+                    _ => "unknown",
+                });
+                println!("    bs={} features={}", job.batch_size, job.features);
+                println!("    cmd: {cmd}");
+                println!();
+
+                if dry_run { continue; }
+
+                let host = job.host.to_string();
+                let ssh_cmd = cmd.clone();
+                let node_name = job.node.to_string();
+                let tier = job.model_tier.to_string();
+
+                let handle = std::thread::spawn(move || {
+                    println!("[{node_name}] starting {tier} training...");
+                    let result = std::process::Command::new("ssh")
+                        .args([&host, &ssh_cmd])
+                        .stdout(std::process::Stdio::inherit())
+                        .stderr(std::process::Stdio::inherit())
+                        .status();
+                    match result {
+                        Ok(status) => println!("[{node_name}] {tier} exited: {status}"),
+                        Err(e) => eprintln!("[{node_name}] {tier} SSH failed: {e}"),
+                    }
+                });
+                handles.push(handle);
+            }
+
+            if dry_run {
+                println!("dry run complete. Add --no-dry-run to start training.");
+            } else {
+                for h in handles {
+                    let _ = h.join();
+                }
+                println!("train-fleet: all nodes complete");
+            }
         }
     }
 

@@ -20,6 +20,7 @@ path = "src/main.rs"
 default = ["metal", "sd-pipeline"]
 metal = ["candle-core/metal", "candle-nn/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
+vulkan = ["dep:any-gpu"]
 # SD pipeline needs hf-hub + tokenizers for downloading models. Not needed on mobile.
 sd-pipeline = ["dep:hf-hub", "dep:tokenizers", "dep:candle-transformers"]
 
@@ -44,6 +45,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 sha2 = "0.10"
 half = "2"
 blake3 = "1"
+any-gpu = { version = "0.1", optional = true }
 
 [profile.release]
 opt-level = 'z'
