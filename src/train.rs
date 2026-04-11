@@ -22,6 +22,7 @@ use crate::anvil_unet::AnvilUNet;
 
 
 /// Training config.
+#[derive(Clone)]
 pub struct TrainConfig {
     pub data_dir: String,
     pub output: String,
@@ -479,6 +480,17 @@ pub fn detect_v_pred(path: &str) -> bool {
 
 /// Train loop — works with any DiffusionModel (Tiny, Medium, Anvil).
 /// Supports CFG, EMA, cosine noise schedule, min-SNR weighting, and v-prediction.
+/// How training ended — used by Sponge Mesh to decide retry strategy.
+#[derive(Debug)]
+pub enum TrainStop {
+    /// Ran all epochs successfully.
+    Complete { final_loss: f64 },
+    /// Loss went NaN at this epoch.
+    NanLoss(usize),
+    /// Loss stalled: no improvement over a window of epochs.
+    Plateau { epoch: usize, loss: f64 },
+}
+
 fn train_inner(
     model: &dyn DiffusionModel,
     varmap: &VarMap,
@@ -486,7 +498,7 @@ fn train_inner(
     dataset: &PackedDataset,
     cond_dataset: Option<&PackedDataset>,
     device: &Device,
-) -> Result<()> {
+) -> Result<TrainStop> {
     let n = dataset.labels.len();
     let stride = dataset.stride;
 
@@ -518,6 +530,7 @@ fn train_inner(
 
     let t0 = std::time::Instant::now();
     let sz = config.img_size as usize;
+    let mut loss_history: Vec<f64> = Vec::with_capacity(config.epochs);
 
     for epoch in 0..config.epochs {
         let epoch_start = std::time::Instant::now();
@@ -669,6 +682,29 @@ fn train_inner(
         let avg_loss = if batch_count > 0 { epoch_loss / batch_count as f64 } else { 0.0 };
         let elapsed = epoch_start.elapsed().as_secs_f32();
 
+        // Sponge Mesh: NaN detection — training is unrecoverable
+        if avg_loss.is_nan() || avg_loss.is_infinite() {
+            println!("  epoch {}/{}: loss=NaN — aborting", epoch + 1, config.epochs);
+            return Ok(TrainStop::NanLoss(epoch));
+        }
+
+        // Track loss history for plateau detection
+        loss_history.push(avg_loss);
+
+        // Sponge Mesh: plateau detection — no improvement over 20 epochs
+        const PLATEAU_WINDOW: usize = 20;
+        const PLATEAU_THRESHOLD: f64 = 1e-6;
+        if loss_history.len() >= PLATEAU_WINDOW {
+            let recent = &loss_history[loss_history.len() - PLATEAU_WINDOW..];
+            let best_recent = recent.iter().copied().fold(f64::MAX, f64::min);
+            let worst_recent = recent.iter().copied().fold(f64::MIN, f64::max);
+            if (worst_recent - best_recent).abs() < PLATEAU_THRESHOLD {
+                println!("  epoch {}/{}: loss plateau ({:.8} ± {:.2e}) — aborting",
+                    epoch + 1, config.epochs, avg_loss, worst_recent - best_recent);
+                return Ok(TrainStop::Plateau { epoch, loss: avg_loss });
+            }
+        }
+
         if epoch % 5 == 0 || epoch == config.epochs - 1 {
             println!("  epoch {}/{}: loss={:.6} lr={:.1e} ({:.1}s)", epoch + 1, config.epochs, avg_loss, lr, elapsed);
         }
@@ -701,14 +737,15 @@ fn train_inner(
     save_with_marker(varmap, &config.output, config.v_prediction)?;
 
     let file_size = std::fs::metadata(&config.output)?.len();
+    let final_loss = loss_history.last().copied().unwrap_or(0.0);
     println!("done: {} ({:.1} MB) in {:.0}s total",
         config.output, file_size as f64 / 1_048_576.0, t0.elapsed().as_secs_f32());
 
-    Ok(())
+    Ok(TrainStop::Complete { final_loss })
 }
 
 /// Train — dispatches to Tiny or Medium based on config.
-pub fn train(config: &TrainConfig) -> Result<()> {
+pub fn train(config: &TrainConfig) -> Result<TrainStop> {
     let device = crate::pipeline::best_device();
     // Weights always f32 for optimizer stability. Forward pass cast to f16 when --fp16.
     let dtype = DType::F32;
@@ -730,7 +767,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
         None
     };
 
-    if config.anvil {
+    let stop = if config.anvil {
         let model = AnvilUNet::new(vb)?;
         let params = AnvilUNet::param_count(&varmap);
         println!("model: Anvil (AnvilUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
@@ -739,7 +776,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
-        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
+        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
     } else if config.medium {
         let model = MediumUNet::with_channels(vb, in_ch)?;
         let params = MediumUNet::param_count(&varmap);
@@ -749,7 +786,7 @@ pub fn train(config: &TrainConfig) -> Result<()> {
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
-        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
+        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
     } else {
         let model = TinyUNet::with_channels(vb, in_ch)?;
         let params = TinyUNet::param_count(&varmap);
@@ -759,10 +796,10 @@ pub fn train(config: &TrainConfig) -> Result<()> {
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
-        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?;
-    }
+        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
+    };
 
-    Ok(())
+    Ok(stop)
 }
 
 /// Default CFG guidance scale for inference.

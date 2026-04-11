@@ -37,6 +37,7 @@ pub mod poa;
 pub mod quantize;
 pub mod relight;
 pub mod nanosign;
+pub mod sponge;
 
 /// Recursively collect all .png files under a directory.
 pub fn walk_pngs(dir: &str) -> Vec<std::path::PathBuf> {

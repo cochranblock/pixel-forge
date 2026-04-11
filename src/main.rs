@@ -142,6 +142,9 @@ enum Cmd {
         /// Resume from existing safetensors checkpoint.
         #[arg(long)]
         resume: Option<String>,
+        /// Sponge Mesh: auto-retry on NaN/plateau (max 3 retries).
+        #[arg(long)]
+        sponge: bool,
     },
     /// Ingest Gemini-generated sprite sheets into training data.
     /// Slices grids, removes backgrounds, downscales to 32x32, sorts by filename.
@@ -1114,6 +1117,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             fp16,
             checkpoint_every,
             resume,
+            sponge,
         } => {
             // Fix: default output to correct model filename based on tier
             let output = if output == "pixel-forge-cinder.safetensors" {
@@ -1146,7 +1150,26 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 resume,
                 ..Default::default()
             };
-            train::train(&config)?;
+            if sponge {
+                sponge::sponge_train(&config)?;
+            } else {
+                let stop = train::train(&config)?;
+                match stop {
+                    train::TrainStop::Complete { final_loss } => {
+                        println!("training complete, final loss: {final_loss:.6}");
+                    }
+                    train::TrainStop::NanLoss(epoch) => {
+                        eprintln!("training aborted: NaN loss at epoch {}", epoch + 1);
+                        eprintln!("try: --sponge for auto-retry, or lower --lr");
+                        std::process::exit(1);
+                    }
+                    train::TrainStop::Plateau { epoch, loss } => {
+                        eprintln!("training aborted: loss plateau at epoch {} (loss={loss:.8})", epoch + 1);
+                        eprintln!("try: --sponge for auto-retry, or different data");
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
         Cmd::Generate {
             class,
