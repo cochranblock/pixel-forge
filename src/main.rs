@@ -916,7 +916,14 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             }
         }
         Cmd::Skeletons { data, img_size } => {
-            train::compute_skeletons(&data, img_size)?;
+            train::compute_skeletons_v2(&data, img_size)?;
+            // Copy to CWD so generation commands find it
+            let src = format!("{data}/skeletons_v2.safetensors");
+            let dst = "skeletons_v2.safetensors";
+            if std::path::Path::new(&src).exists() && src != dst {
+                std::fs::copy(&src, dst)?;
+                println!("copied: {dst}");
+            }
         }
         Cmd::PrepStages { data, palette_colors: _ } => {
             let data_path = std::path::Path::new(&data);
