@@ -68,6 +68,92 @@ fn ddim_step(
     }
 }
 
+// ─── Model boundary handoff functions ───────────────────────────────────────
+// Every model-to-model tensor transfer goes through a named function.
+// No direct pass-through between models.
+
+/// Handoff: Quench output → Cinder input.
+/// Validates shape, clamps to valid range, logs transfer.
+fn quench_to_cinder(x: &Tensor, img_size: u32, device: &candle_core::Device) -> candle_core::Result<Tensor> {
+    let dims = x.dims();
+    assert!(dims.len() == 4 && dims[1] == 3 && dims[2] == img_size as usize && dims[3] == img_size as usize,
+        "quench_to_cinder: bad shape {:?}, expected (_, 3, {img_size}, {img_size})", dims);
+    let clamped = x.clamp(-3.0, 3.0)?;
+    let flat = clamped.flatten_all()?.to_vec1::<f32>()?;
+    let min = flat.iter().copied().fold(f32::MAX, f32::min);
+    let max = flat.iter().copied().fold(f32::MIN, f32::max);
+    println!("  handoff: quench→cinder, shape={dims:?}, range=[{min:.3},{max:.3}]");
+    Ok(clamped.to_device(device)?)
+}
+
+/// Handoff: apply expert correction to Cinder's prediction.
+/// Routes to the correct expert stage, validates the correction didn't blow up.
+fn apply_expert_correction(
+    pred: &Tensor,
+    experts: &crate::expert::ExpertSet,
+    step: usize,
+    total_steps: usize,
+) -> candle_core::Result<Tensor> {
+    let stage = expert::route(step, total_steps);
+    let corrected = experts.correct(pred, stage)?;
+    let delta = (&corrected - pred)?;
+    let delta_flat = delta.flatten_all()?.to_vec1::<f32>()?;
+    let delta_norm: f32 = (delta_flat.iter().map(|v| v * v).sum::<f32>() / delta_flat.len() as f32).sqrt();
+    println!("  expert correction: stage={stage:?}, delta_norm={delta_norm:.4}");
+    // Bail if expert correction exploded
+    assert!(delta_norm < 10.0, "expert correction blew up: delta_norm={delta_norm}");
+    Ok(corrected)
+}
+
+/// Handoff: final tensor → validated output ready for image conversion.
+/// Clamps to [0, 1], validates shape and value range.
+fn model_to_output(x: &Tensor, img_size: u32) -> candle_core::Result<Tensor> {
+    let clamped = x.clamp(0.0, 1.0)?;
+    let dims = clamped.dims();
+    assert!(dims.len() == 4 && dims[1] == 3 && dims[2] == img_size as usize && dims[3] == img_size as usize,
+        "model_to_output: bad shape {:?}, expected (_, 3, {img_size}, {img_size})", dims);
+    Ok(clamped)
+}
+
+/// Handoff: Cinder-sil output → structure maps → Quench-detail input.
+/// Converts silhouette tensor into SDF + normal maps for conditioned generation.
+fn sil_to_structure(sil: &Tensor, img_size: u32) -> Result<Tensor> {
+    let device = sil.device();
+    let sz = img_size as usize;
+    let clamped = sil.clamp(0.0, 1.0)?;
+
+    // Threshold to binary mask
+    let sil_mean = clamped.mean_keepdim(1)?;
+    let threshold = Tensor::new(&[0.3f32], device)?.broadcast_as(sil_mean.shape())?;
+    let mask = sil_mean.ge(&threshold)?;
+    let ones = mask.ones_like()?.to_dtype(DType::F32)?;
+    let zeros = mask.zeros_like()?.to_dtype(DType::F32)?;
+    let binary = mask.where_cond(&ones, &zeros)?;
+    let binary_3ch = Tensor::cat(&[&binary, &binary, &binary], 1)?;
+    let sil_img = tensor_to_rgba(&binary_3ch, img_size)?;
+    let (sdf, nx, ny, _outline) = crate::relight::compute_structure(&sil_img);
+
+    // Pack: R=SDF, G=0.5+0.5*nx, B=0.5+0.5*ny
+    let mut struct_px = vec![0.0f32; 3 * sz * sz];
+    for y in 0..sz {
+        for px in 0..sz {
+            let idx = y * sz + px;
+            struct_px[idx] = sdf[idx];
+            struct_px[sz * sz + idx] = 0.5 + 0.5 * nx[idx];
+            struct_px[2 * sz * sz + idx] = 0.5 + 0.5 * ny[idx];
+        }
+    }
+    let struct_tensor = Tensor::from_vec(struct_px, (1, 3, sz, sz), device)?;
+
+    let flat = struct_tensor.flatten_all()?.to_vec1::<f32>()?;
+    let min = flat.iter().copied().fold(f32::MAX, f32::min);
+    let max = flat.iter().copied().fold(f32::MIN, f32::max);
+    println!("  handoff: sil→structure, shape={:?}, range=[{min:.3},{max:.3}]", struct_tensor.dims());
+    Ok(struct_tensor)
+}
+
+// ─── End handoff functions ──────────────────────────────────────────────────
+
 /// 2-stage cascade: Quench foundation → Cinder detail + Experts.
 pub fn cascade_sample(
     quench_path: &str,
@@ -147,6 +233,9 @@ pub fn cascade_sample(
             x = ddim_step(&quench, &x, amount, next_amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale, &device, quench_v_pred)?;
         }
 
+        // ── Handoff: Quench → Cinder ──
+        x = quench_to_cinder(&x, img_size, &device)?;
+
         // Phase 2: Cinder detail (edges, highlights, fine pixel work)
         for step in config.quench_steps..total_steps {
             let t_frac = 1.0 - (step as f32 / total_steps as f32);
@@ -166,10 +255,9 @@ pub fn cascade_sample(
                 train::cfg_denoise(&cinder, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
             };
 
-            // Expert correction during detail phase
+            // ── Handoff: Cinder prediction → Expert correction ──
             let pred_clean = if let Some(ref exp) = experts {
-                let stage = expert::route(step - config.quench_steps, config.cinder_steps);
-                exp.correct(&pred_clean, stage)?
+                apply_expert_correction(&pred_clean, exp, step - config.quench_steps, config.cinder_steps)?
             } else {
                 pred_clean
             };
@@ -182,7 +270,9 @@ pub fn cascade_sample(
             }
         }
 
-        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
+        // ── Handoff: Cinder → output ──
+        let validated = model_to_output(&x, img_size)?;
+        let img = tensor_to_rgba(&validated, img_size)?;
         images.push(img);
         println!("  cascade sample {}/{count}", i + 1);
     }
@@ -226,7 +316,9 @@ pub fn anvil_sample(
             x = ddim_step(&anvil, &x, amount, next_amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale, &device, anvil_v_pred)?;
         }
 
-        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
+        // ── Handoff: Anvil → output ──
+        let validated = model_to_output(&x, img_size)?;
+        let img = tensor_to_rgba(&validated, img_size)?;
         images.push(img);
         println!("  anvil sample {}/{count}", i + 1);
     }
@@ -393,31 +485,8 @@ pub fn stage_cascade_sample(
             } else { 0.0 };
             x = ddim_step(&sil_model, &x, amount, next_amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale, &device, false)?;
         }
-        let sil = x.clamp(0.0, 1.0)?;
-
-        // Phase 2: Threshold silhouette to binary, then compute structure
-        // Average RGB channels, threshold at 0.3 to get clean binary mask
-        let sil_mean = sil.mean_keepdim(1)?; // (1, 1, H, W)
-        let threshold = Tensor::new(&[0.3f32], &device)?.broadcast_as(sil_mean.shape())?;
-        let mask = sil_mean.ge(&threshold)?;  // boolean mask
-        let ones = mask.ones_like()?.to_dtype(DType::F32)?;
-        let zeros = mask.zeros_like()?.to_dtype(DType::F32)?;
-        let binary = mask.where_cond(&ones, &zeros)?;
-        let binary_3ch = Tensor::cat(&[&binary, &binary, &binary], 1)?; // (1, 3, H, W)
-        let sil_img = tensor_to_rgba(&binary_3ch, img_size)?;
-        let (sdf, nx, ny, _outline) = crate::relight::compute_structure(&sil_img);
-
-        // Pack as 3ch tensor: R=SDF, G=0.5+0.5*nx, B=0.5+0.5*ny
-        let mut struct_px = vec![0.0f32; 3 * sz * sz];
-        for y in 0..sz {
-            for px in 0..sz {
-                let idx = y * sz + px;
-                struct_px[idx] = sdf[idx];                           // R = SDF
-                struct_px[sz * sz + idx] = 0.5 + 0.5 * nx[idx];     // G = normal X
-                struct_px[2 * sz * sz + idx] = 0.5 + 0.5 * ny[idx]; // B = normal Y
-            }
-        }
-        let struct_tensor = Tensor::from_vec(struct_px, (1, 3, sz, sz), &device)?;
+        // ── Handoff: Cinder-sil → structure maps → Quench-detail ──
+        let struct_tensor = sil_to_structure(&x, img_size)?;
 
         // Phase 3: Quench-detail — 6ch input (structure + noisy sprite)
         let mut x = Tensor::rand(0f32, 1f32, (1, 3, sz, sz), &device)?;
@@ -442,7 +511,9 @@ pub fn stage_cascade_sample(
             }
         }
 
-        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
+        // ── Handoff: Quench-detail → output ──
+        let validated = model_to_output(&x, img_size)?;
+        let img = tensor_to_rgba(&validated, img_size)?;
         images.push(img);
         println!("  stage cascade sample {}/{count}", i + 1);
     }
@@ -522,7 +593,9 @@ pub fn detail_only_sample(
             }
         }
 
-        let img = tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?;
+        // ── Handoff: Quench-detail → output ──
+        let validated = model_to_output(&x, img_size)?;
+        let img = tensor_to_rgba(&validated, img_size)?;
         images.push(img);
         println!("  detail sample {}/{}", i + 1, count);
     }
