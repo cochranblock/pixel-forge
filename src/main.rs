@@ -586,6 +586,66 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Train a per-class siloed MicroUNet model.
+    /// One model per class group — models are leaf nodes, code is trunk.
+    TrainSilo {
+        /// Silo name (matches [class.NAME] in class_config.toml).
+        #[arg(long)]
+        class: String,
+        /// Path to training data directory.
+        #[arg(short, long, default_value = "data_v3_32")]
+        data: String,
+        /// Output model file (.safetensors).
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Number of training epochs.
+        #[arg(short, long, default_value_t = 200)]
+        epochs: usize,
+        /// Batch size.
+        #[arg(short, long, default_value_t = 32)]
+        batch_size: usize,
+        /// Learning rate.
+        #[arg(short, long, default_value_t = 2e-4)]
+        lr: f64,
+        /// Channel config: "16,32" or "16,32,32".
+        #[arg(long)]
+        channels: Option<String>,
+        /// Config file for class→silo routing.
+        #[arg(long, default_value = "class_config.toml")]
+        config: String,
+        /// Checkpoint every N epochs.
+        #[arg(long, default_value_t = 25)]
+        checkpoint_every: usize,
+        /// Disable EMA.
+        #[arg(long)]
+        no_ema: bool,
+        /// Resume from checkpoint.
+        #[arg(long)]
+        resume: Option<String>,
+    },
+    /// Generate from a per-class siloed model.
+    Silo {
+        /// Class to generate (routed via class_config.toml).
+        class: String,
+        /// Config file.
+        #[arg(long, default_value = "class_config.toml")]
+        config: String,
+        /// Number of images.
+        #[arg(short, long, default_value_t = 1)]
+        count: u32,
+        /// Palette.
+        #[arg(short, long, default_value = "stardew")]
+        palette: String,
+        /// Output file.
+        #[arg(short, long, default_value = "silo.png")]
+        output: String,
+        /// Seed for deterministic generation.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Override diffusion steps.
+        #[arg(long)]
+        steps: Option<usize>,
+    },
     /// Desktop generation: Anvil single-stage (needs 3+ GB VRAM).
     Anvil {
         /// Class to generate.
@@ -1875,6 +1935,96 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                     println!("  pixel-forge govdocs federal-use-cases  Federal agency use cases");
                 }
             }
+        }
+        Cmd::TrainSilo { class, data, output, epochs, batch_size, lr, channels, config, checkpoint_every, no_ema, resume } => {
+            // Resolve class filter from config if available
+            let class_filter = if class_router::ClassRouter::exists(&config) {
+                let router = class_router::ClassRouter::load(&config)?;
+                let classes = router.classes_for_silo(&class);
+                if classes.is_empty() {
+                    vec![class.clone()]
+                } else {
+                    classes.into_iter().map(|s| s.to_string()).collect()
+                }
+            } else {
+                vec![class.clone()]
+            };
+
+            // Resolve channels
+            let micro_channels = if let Some(ref ch_str) = channels {
+                ch_str.split(',').map(|s| s.trim().parse::<usize>()).collect::<std::result::Result<Vec<_>, _>>()?
+            } else if class_router::ClassRouter::exists(&config) {
+                let router = class_router::ClassRouter::load(&config)?;
+                router.route(&class).map(|dc| dc.channels.clone()).unwrap_or_else(|| vec![16, 32])
+            } else {
+                vec![16, 32]
+            };
+
+            let output = output.unwrap_or_else(|| format!("models/{class}.safetensors"));
+            // Ensure models/ directory exists
+            if let Some(parent) = std::path::Path::new(&output).parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let train_config = train::TrainConfig {
+                data_dir: data,
+                output,
+                epochs,
+                batch_size,
+                lr,
+                img_size: 32,
+                micro: true,
+                class_filter,
+                micro_channels,
+                ema: !no_ema,
+                checkpoint_every,
+                resume,
+                cfg_dropout: 0.0, // no CFG for unconditional micro models
+                ..Default::default()
+            };
+            let stop = train::train(&train_config)?;
+            match stop {
+                train::TrainStop::Complete { final_loss } => {
+                    println!("silo training complete, final loss: {final_loss:.6}");
+                }
+                train::TrainStop::NanLoss(epoch) => {
+                    eprintln!("training aborted: NaN loss at epoch {}", epoch + 1);
+                    std::process::exit(1);
+                }
+                train::TrainStop::Plateau { epoch, loss } => {
+                    eprintln!("training aborted: plateau at epoch {} (loss={loss:.8})", epoch + 1);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Cmd::Silo { class, config, count, palette: palette_name, output, seed, steps } => {
+            let router = class_router::ClassRouter::load(&config)?;
+            let dc = router.route(&class)
+                .ok_or_else(|| anyhow::anyhow!("no silo found for class '{class}' in {config}"))?;
+
+            if !std::path::Path::new(&dc.model_path).exists() {
+                anyhow::bail!("model not found: {}. Train it first: pixel-forge train-silo --class {}", dc.model_path, class);
+            }
+
+            let steps = steps.unwrap_or(dc.steps);
+            let pal = palette::load_palette(&palette_name)?;
+
+            let raw_images = train::sample_micro(&dc.model_path, &dc.channels, 32, count, steps, seed)?;
+            let processed: Vec<image::RgbaImage> = raw_images
+                .into_iter()
+                .map(|img| {
+                    let snapped = grid::snap_to_grid(&img, 32);
+                    palette::quantize(&snapped, &pal)
+                })
+                .collect();
+
+            if count == 1 {
+                processed[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&processed, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {output}");
         }
         Cmd::Anvil { class, anvil, count, steps, palette: palette_name, output, cfg } => {
             let cond = class_cond::lookup(&class.to_lowercase());

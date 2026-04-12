@@ -1,0 +1,84 @@
+# Per-class siloed model config — 18 silos
+# Models are leaf nodes, code is trunk. No model-to-model communication.
+
+[defaults]
+steps = 30
+guidance_scale = 2.5
+scheduler = "cosine"
+
+[class.character]
+model = "models/character.safetensors"
+classes = ["character", "villager", "knight", "hero_warrior", "hero_mage", "hero_cleric", "hero_rogue"]
+steps = 35
+guidance_scale = 3.0
+channels = [16, 32, 32]
+
+[class.humanoid_fantasy]
+model = "models/humanoid_fantasy.safetensors"
+classes = ["elf", "dwarf", "orc", "goblin", "fairy"]
+
+[class.humanoid_undead]
+model = "models/humanoid_undead.safetensors"
+classes = ["skeleton", "zombie", "ghost"]
+
+[class.humanoid_tech]
+model = "models/humanoid_tech.safetensors"
+classes = ["cyborg", "spacemarine"]
+
+[class.creature]
+model = "models/creature.safetensors"
+classes = ["animal", "farm_animal", "wild_animal", "bird", "fish", "dog", "horse", "cat_domestic", "cat_fat", "cat_space", "cat_warrior", "cat_wizard", "reptile", "jellyfish", "crab"]
+channels = [16, 32, 32]
+
+[class.monster]
+model = "models/monster.safetensors"
+classes = ["enemy", "demon", "dragon", "slime", "wolf", "bear"]
+channels = [16, 32, 32]
+
+[class.weapon_melee]
+model = "models/weapon_melee.safetensors"
+classes = ["sword", "axe_hammer", "spear_polearm", "lightsaber", "weapon"]
+
+[class.weapon_ranged]
+model = "models/weapon_ranged.safetensors"
+classes = ["bow_ranged", "gun", "staff_wand"]
+
+[class.armor]
+model = "models/armor.safetensors"
+classes = ["body_armor", "helmet", "shield", "boots_gloves", "cloak"]
+
+[class.equipment]
+model = "models/equipment.safetensors"
+classes = ["key", "scroll_book"]
+
+[class.consumable]
+model = "models/consumable.safetensors"
+classes = ["potion", "food", "crop", "mushroom", "gem_treasure"]
+
+[class.terrain]
+model = "models/terrain.safetensors"
+classes = ["terrain", "terrain_scifi", "ground_natural", "floor", "wall", "door_stair"]
+
+[class.nature]
+model = "models/nature.safetensors"
+classes = ["tree", "tree_conifer", "tree_deciduous", "tree_exotic", "bush_flower"]
+
+[class.building]
+model = "models/building.safetensors"
+classes = ["building", "building_scifi"]
+
+[class.furniture]
+model = "models/furniture.safetensors"
+classes = ["furniture_decor", "furniture_light", "furniture_room", "furniture_storage"]
+
+[class.vehicle]
+model = "models/vehicle.safetensors"
+classes = ["vehicle_air", "vehicle_land", "vehicle_space", "vehicle_water", "mech", "mount"]
+
+[class.ui]
+model = "models/ui.safetensors"
+classes = ["ui", "ui_frame", "ui_icon"]
+
+[class.fx]
+model = "models/fx.safetensors"
+classes = ["effect", "fx_ambient", "fx_combat", "fx_elemental", "fx_scifi", "misc", "gemini"]

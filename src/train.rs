@@ -19,6 +19,7 @@ use std::path::Path;
 use crate::tiny_unet::TinyUNet;
 use crate::medium_unet::MediumUNet;
 use crate::anvil_unet::AnvilUNet;
+use crate::micro_unet::MicroUNet;
 
 
 /// Training config.
@@ -32,6 +33,12 @@ pub struct TrainConfig {
     pub img_size: u32,
     pub medium: bool,
     pub anvil: bool,
+    /// Use MicroUNet (~97K params) for per-class siloed training.
+    pub micro: bool,
+    /// Class filter: only train on samples from these class subdirectories.
+    pub class_filter: Vec<String>,
+    /// MicroUNet channel config (e.g. [16,32] or [16,32,32]).
+    pub micro_channels: Vec<usize>,
     /// Conditioning data dir for stage-aware training (e.g. silhouettes).
     /// When set, model takes 6 input channels (condition + noisy target).
     pub condition_dir: Option<String>,
@@ -71,6 +78,9 @@ impl Default for TrainConfig {
             img_size: 32,
             medium: false,
             anvil: false,
+            micro: false,
+            class_filter: Vec::new(),
+            micro_channels: vec![16, 32],
             cfg_dropout: 0.1,
             ema: true,
             ema_decay: 0.9999,
@@ -321,6 +331,94 @@ pub fn preprocess(data_dir: &str, img_size: u32) -> Result<PackedDataset> {
     println!("total: {} images, {} bad skipped", total, bad);
     println!("cached: {:.1} MB raw → {:.1} MB zstd ({:.0}x) in {:.1}s",
         raw_mb, comp_mb, raw_mb / comp_mb, t0.elapsed().as_secs_f32());
+
+    Ok(dataset)
+}
+
+/// Preprocess only the specified class subdirectories.
+/// Per-class cache: dataset-{filter_key}.bin.zst
+pub fn preprocess_class(data_dir: &str, img_size: u32, class_filter: &[String]) -> Result<PackedDataset> {
+    if class_filter.is_empty() {
+        return preprocess(data_dir, img_size);
+    }
+
+    let mut sorted = class_filter.to_vec();
+    sorted.sort();
+    let filter_key = sorted.join("_");
+    let cache_file = format!("{}/dataset-{}.bin.zst", data_dir, filter_key);
+    let cache_path = Path::new(&cache_file);
+
+    if cache_path.exists() {
+        println!("loading cached class dataset from {cache_file}...");
+        let t0 = std::time::Instant::now();
+        let compressed = std::fs::read(cache_path)?;
+        let decompressed = zstd::decode_all(compressed.as_slice())?;
+        let dataset: PackedDataset = bincode::deserialize(&decompressed)?;
+        let n = dataset.super_ids.len();
+        let mb = compressed.len() as f64 / 1_048_576.0;
+        println!("  loaded {} images from cache ({:.1} MB compressed) in {:.1}s",
+            n, mb, t0.elapsed().as_secs_f32());
+        return Ok(dataset);
+    }
+
+    println!("preprocessing classes [{}] from {data_dir}...", sorted.join(", "));
+    let t0 = std::time::Instant::now();
+    let data_p = Path::new(data_dir);
+    let stride = (3 * img_size * img_size) as usize;
+    let mut pixels: Vec<f32> = Vec::new();
+    let mut labels: Vec<u32> = Vec::new();
+    let mut super_ids: Vec<u32> = Vec::new();
+    let mut tags_vec: Vec<[f32; 12]> = Vec::new();
+    let mut total = 0usize;
+    let mut bad = 0usize;
+
+    for name in &sorted {
+        let class_dir = data_p.join(name);
+        if !class_dir.is_dir() { continue; }
+
+        let cond = crate::class_cond::lookup(name);
+        let mut entries: Vec<_> = std::fs::read_dir(&class_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path().extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("png"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+
+        let mut class_count = 0;
+        for entry in &entries {
+            match decode_png(&entry.path(), img_size) {
+                Some(px) => {
+                    pixels.extend_from_slice(&px);
+                    labels.push(0); // single-class, label unused
+                    super_ids.push(cond.super_id);
+                    tags_vec.push(cond.tags);
+                    class_count += 1;
+                    total += 1;
+                }
+                None => { bad += 1; }
+            }
+        }
+        if class_count > 0 {
+            println!("  {name}: {class_count}");
+        }
+    }
+
+    if total == 0 {
+        anyhow::bail!("no images found for classes [{}] in {data_dir}", sorted.join(", "));
+    }
+
+    let dataset = PackedDataset { version: 2, img_size, pixels, labels, super_ids, tags: tags_vec, stride };
+    let encoded = bincode::serialize(&dataset)?;
+    let compressed = zstd::encode_all(encoded.as_slice(), 3)?;
+    std::fs::write(cache_path, &compressed)?;
+
+    let comp_mb = compressed.len() as f64 / 1_048_576.0;
+    println!("total: {} images, {} bad skipped ({:.1} MB zstd) in {:.1}s",
+        total, bad, comp_mb, t0.elapsed().as_secs_f32());
 
     Ok(dataset)
 }
@@ -744,13 +842,16 @@ fn train_inner(
     Ok(TrainStop::Complete { final_loss })
 }
 
-/// Train — dispatches to Tiny or Medium based on config.
+/// Train — dispatches to Micro, Tiny, Medium, or Anvil based on config.
 pub fn train(config: &TrainConfig) -> Result<TrainStop> {
     let device = crate::pipeline::best_device();
-    // Weights always f32 for optimizer stability. Forward pass cast to f16 when --fp16.
     let dtype = DType::F32;
 
-    let dataset = preprocess(&config.data_dir, config.img_size)?;
+    let dataset = if config.micro && !config.class_filter.is_empty() {
+        preprocess_class(&config.data_dir, config.img_size, &config.class_filter)?
+    } else {
+        preprocess(&config.data_dir, config.img_size)?
+    };
 
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, dtype, &device);
@@ -767,7 +868,19 @@ pub fn train(config: &TrainConfig) -> Result<TrainStop> {
         None
     };
 
-    let stop = if config.anvil {
+    let stop = if config.micro {
+        let model = MicroUNet::with_channels(vb, &config.micro_channels)?;
+        let params = MicroUNet::param_count(&varmap);
+        let ch_str = config.micro_channels.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
+        println!("model: Micro (MicroUNet, [{ch_str}]), {} params ({:.1} MB)",
+            params, params as f64 * 4.0 / 1_048_576.0);
+        if let Some(ref checkpoint) = config.resume {
+            crate::nanosign::verify_or_bail(checkpoint)?;
+            varmap.load(checkpoint)?;
+            println!("resumed from {checkpoint}");
+        }
+        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
+    } else if config.anvil {
         let model = AnvilUNet::new(vb)?;
         let params = AnvilUNet::param_count(&varmap);
         println!("model: Anvil (AnvilUNet), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
@@ -1409,6 +1522,65 @@ pub fn sample_anvil(
     Ok(images)
 }
 
+/// Sample from a MicroUNet siloed model — no class conditioning needed.
+pub fn sample_micro(
+    model_path: &str,
+    channels: &[usize],
+    img_size: u32,
+    count: u32,
+    steps: usize,
+    seed: Option<u64>,
+) -> Result<Vec<RgbaImage>> {
+    let device = crate::pipeline::best_device();
+    let is_f16 = crate::quantize::is_f16(model_path);
+
+    println!("loading Micro model from {model_path}{}...", if is_f16 { " (f16→f32)" } else { "" });
+    let mut varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MicroUNet::with_channels(vb, channels)?;
+    let is_v_pred = detect_v_pred(model_path);
+    crate::quantize::load_varmap(&mut varmap, model_path)?;
+
+    let params = MicroUNet::param_count(&varmap);
+    let ch_str = channels.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
+    let pred_tag = if is_v_pred { ", v-pred" } else { "" };
+    println!("model: Micro [{ch_str}], {} params, sampling {} images, {steps} steps{pred_tag}", params, count);
+
+    let mut images = Vec::new();
+    for i in 0..count {
+        let mut x = seeded_noise(seed, 0, i, img_size, &device)?;
+
+        for step in 0..steps {
+            let t_frac = 1.0 - (step as f32 / steps as f32);
+            let amount = cosine_schedule(t_frac);
+            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
+            let next_amount = if step + 1 < steps { cosine_schedule(next_frac) } else { 0.0 };
+
+            let t = Tensor::new(&[amount], &device)?;
+            // No CFG — unconditional model. Dummy super_id/tags passed through DiffusionModel trait.
+            let pred_clean = if is_v_pred {
+                let v = model.forward_uncond(&x, &t)?;
+                let a = amount as f64;
+                ((&x * (1.0 - a))? - (&v * a)?)?
+            } else {
+                model.forward_uncond(&x, &t)?
+            };
+
+            if next_amount > 1e-6 {
+                let pred_noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?
+                    .clamp(-3.0, 3.0)?;
+                x = ((&pred_clean * (1.0 - next_amount as f64))? + (&pred_noise * next_amount as f64)?)?;
+            } else {
+                x = pred_clean;
+            }
+        }
+
+        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
+        println!("  sample {}/{count}", i + 1);
+    }
+
+    Ok(images)
+}
 
 #[cfg(test)]
 mod tests {

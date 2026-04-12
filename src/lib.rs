@@ -15,6 +15,8 @@ pub mod pipeline_stub;
 #[cfg(not(feature = "sd-pipeline"))]
 pub use pipeline_stub as pipeline;
 pub mod tiny_unet;
+pub mod micro_unet;
+pub mod class_router;
 pub mod train;
 pub mod curate;
 pub mod judge;
