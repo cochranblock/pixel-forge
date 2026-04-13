@@ -82,3 +82,23 @@ classes = ["ui", "ui_frame", "ui_icon"]
 [class.fx]
 model = "models/fx.safetensors"
 classes = ["effect", "fx_ambient", "fx_combat", "fx_elemental", "fx_scifi", "misc", "gemini"]
+
+[class.kart]
+model = "models/kart.safetensors"
+classes = ["kart"]
+
+[class.tower]
+model = "models/tower.safetensors"
+classes = ["tower"]
+
+[class.projectile]
+model = "models/projectile.safetensors"
+classes = ["projectile"]
+
+[class.interactable]
+model = "models/interactable.safetensors"
+classes = ["interactable"]
+
+[class.road]
+model = "models/road.safetensors"
+classes = ["road"]
