@@ -46,7 +46,10 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 sha2 = "0.10"
 half = "2"
 blake3 = "1"
-any-gpu = { version = "0.1", optional = true }
+# any-gpu is not published to crates.io; pull from git so bt can cargo-build without
+# relying on a specific path layout. For local hacking, add a [patch] section (see
+# https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html).
+any-gpu = { git = "https://github.com/cochranblock/any-gpu", branch = "main", optional = true }
 
 [profile.release]
 opt-level = 'z'

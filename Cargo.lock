@@ -244,8 +244,7 @@ dependencies = [
 [[package]]
 name = "any-gpu"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90108dc28f3464095af08caa22a4dbab5410eafaf03b155b35bcb78e3d6a1fc2"
+source = "git+https://github.com/cochranblock/any-gpu?branch=main#34e4fa8d8c8469ab807c193d20a814c38ac0b258"
 dependencies = [
  "anyhow",
  "blake3",

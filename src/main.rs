@@ -622,6 +622,11 @@ enum Cmd {
         /// Resume from checkpoint.
         #[arg(long)]
         resume: Option<String>,
+        /// Use any-gpu Vulkan backend instead of candle. Required for AMD RDNA1/2
+        /// (e.g. RX 5700 XT on bt) where ROCm is unavailable.
+        #[cfg(feature = "vulkan")]
+        #[arg(long)]
+        vulkan: bool,
     },
     /// Generate from a per-class siloed model.
     Silo {
@@ -1202,22 +1207,15 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             sponge,
             device,
         } => {
-            // Vulkan backend: use any-gpu for AMD GPUs
+            // Vulkan backend: any-gpu now powers the siloed MicroUNet path only.
+            // The legacy Cinder/TinyUNet Vulkan path was retired — use `train-silo --vulkan`
+            // for per-class training on AMD (RX 5700 XT etc.).
             #[cfg(feature = "vulkan")]
             if device == "vulkan" {
-                let output = if output == "pixel-forge-cinder.safetensors" {
-                    if anvil {
-                        "pixel-forge-anvil.safetensors".to_string()
-                    } else if medium {
-                        "pixel-forge-quench.safetensors".to_string()
-                    } else {
-                        output
-                    }
-                } else {
-                    output
-                };
-                vulkan_backend::vulkan_train(&data, &output, epochs, batch_size as u32, lr)?;
-                return Ok(());
+                anyhow::bail!(
+                    "vulkan training is now routed through `pixel-forge train-silo --vulkan --class <name>` \
+                     (MicroUNet path). Use that for AMD GPUs where candle's CUDA/Metal backends can't reach."
+                );
             }
             #[cfg(not(feature = "vulkan"))]
             if device == "vulkan" {
@@ -1936,7 +1934,12 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 }
             }
         }
-        Cmd::TrainSilo { class, data, output, epochs, batch_size, lr, channels, config, checkpoint_every, no_ema, resume } => {
+        Cmd::TrainSilo {
+            class, data, output, epochs, batch_size, lr, channels, config,
+            checkpoint_every, no_ema, resume,
+            #[cfg(feature = "vulkan")]
+            vulkan,
+        } => {
             // Resolve class filter from config if available
             let class_filter = if class_router::ClassRouter::exists(&config) {
                 let router = class_router::ClassRouter::load(&config)?;
@@ -1964,6 +1967,23 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             // Ensure models/ directory exists
             if let Some(parent) = std::path::Path::new(&output).parent() {
                 std::fs::create_dir_all(parent)?;
+            }
+
+            #[cfg(feature = "vulkan")]
+            if vulkan {
+                // Route to any-gpu Vulkan backend — bypasses candle entirely.
+                println!("train-silo: using any-gpu Vulkan backend (class={class})");
+                pixel_forge::vulkan_backend::vulkan_micro_train(
+                    &data, &output,
+                    &micro_channels,
+                    &class_filter,
+                    epochs,
+                    batch_size as u32,
+                    lr,
+                    32,
+                )?;
+                println!("silo vulkan training complete: {output}");
+                return Ok(());
             }
 
             let train_config = train::TrainConfig {
