@@ -1,0 +1,23 @@
+# Contributors — Pixel Forge
+
+## Core
+
+- **Michael Cochran** (GotEmCoach) — architecture, training pipeline, all models
+- **KOVA** (AI) — augmentation under human direction
+- **Claude Opus 4.6** — augmentation under human direction
+
+## Training Data Sources
+
+See `data_v3_32/SOURCES.md` for per-dataset provenance.
+
+## Referenced Contributors
+
+People whose public work was used as input context for training data generation.
+Attribution given per the terms of their original publication.
+
+- **Gavin Van der Merwe** — DevOps/Platform Engineering Consultant
+  - AI/ML math operations cheat sheet (LinkedIn, April 2026)
+  - Used as visual reference input for Gemini Pro 5×6 sprite generation pipeline
+  - Operations referenced: ReLU, Softmax, BatchNorm, RMSNorm, CrossEntropy, AdamW, Frobenius norm, JSD, attention mechanisms
+  - Contribution type: reference material for training data generation
+  - Michael's commitment: "I will ensure you are attributed properly in my GitHub code when I use screenshots of this post to get my pixel art made with Gemini pro 5×6 generate pixel art data as input for my custom AI models"
