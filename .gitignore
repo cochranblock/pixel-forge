@@ -7,6 +7,10 @@ skeletons.safetensors
 train-*.log
 data_v2_*/
 data_v3_*/
+models/
+data/raw_expansion/
+generated.png
+.env
 output/
 target/
 android/target/
