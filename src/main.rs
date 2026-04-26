@@ -677,6 +677,80 @@ enum Cmd {
         #[arg(long, default_value_t = 3.0)]
         cfg: f64,
     },
+    /// Tiered pipeline: silo shape → Cinder detail → palette quantize.
+    /// Produces sharper, more class-faithful sprites by routing through
+    /// a per-class MicroUNet before Cinder refinement.
+    Tiered {
+        /// Class to generate: warrior, dragon, building, tree, etc.
+        class: String,
+        /// Directory containing per-class silo models and class_config.toml.
+        #[arg(long, default_value = "models")]
+        silo_dir: String,
+        /// Cinder detail model (Stage 3).
+        #[arg(long, default_value = "pixel-forge-cinder.safetensors")]
+        detail_model: String,
+        /// Number of sprites to generate.
+        #[arg(short, long, default_value_t = 4)]
+        count: u32,
+        /// Palette for output quantization.
+        #[arg(short, long, default_value = "endesga32")]
+        palette: String,
+        /// Silo DDIM steps (Stage 1).
+        #[arg(long, default_value_t = 20)]
+        silo_steps: usize,
+        /// Cinder DDIM steps (Stage 3).
+        #[arg(long, default_value_t = 40)]
+        detail_steps: usize,
+        /// Noise blend level: 0.0 = all silo, 1.0 = all noise. Default 0.45.
+        #[arg(long, default_value_t = 0.45)]
+        refine_t: f32,
+        /// CFG guidance scale.
+        #[arg(long, default_value_t = 3.0)]
+        cfg: f64,
+        /// Seed for deterministic generation.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// PaletteNet model path (Phase 2). When set, predicts class-specific colors.
+        #[arg(long)]
+        palette_model: Option<String>,
+        /// Output file path.
+        #[arg(short, long, default_value = "tiered.png")]
+        output: String,
+    },
+    /// Generate conditioning data for 6ch Cinder-detail fine-tuning.
+    /// Downscales each training image to 16x16 then back to 32x32 (nearest-neighbor),
+    /// producing a coarse palette-quantized hint analogous to silo outputs.
+    /// Output dir must have the same class structure as the source data dir.
+    PrepSiloCond {
+        /// Source training data directory (e.g. data_v3_32).
+        #[arg(short, long, default_value = "data_v3_32")]
+        data: String,
+        /// Output conditioning directory (e.g. data_silo_cond_32).
+        #[arg(short, long, default_value = "data_silo_cond_32")]
+        output: String,
+    },
+    /// Train the PaletteNet — tiny MLP that predicts class-appropriate colors.
+    /// Supervised from K-means dominant colors per class in training data.
+    TrainPaletteNet {
+        /// Path to training data directory.
+        #[arg(short, long, default_value = "data_v3_32")]
+        data: String,
+        /// Output model file.
+        #[arg(short, long, default_value = "models/palette.safetensors")]
+        output: String,
+        /// Training epochs.
+        #[arg(short, long, default_value_t = 50)]
+        epochs: usize,
+        /// Batch size.
+        #[arg(short, long, default_value_t = 64)]
+        batch_size: usize,
+        /// Learning rate.
+        #[arg(long, default_value_t = 1e-3)]
+        lr: f64,
+        /// Number of palette colors to predict per class.
+        #[arg(long, default_value_t = 8)]
+        palette_colors: usize,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -2169,6 +2243,98 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 }
                 println!("train-fleet: all nodes complete");
             }
+        }
+        Cmd::Tiered {
+            class, silo_dir, detail_model, count, palette: palette_name,
+            silo_steps, detail_steps, refine_t, cfg, seed, palette_model, output,
+        } => {
+            let cond = class_cond::lookup(&class.to_lowercase());
+            let config = tiered_pipeline::TieredConfig {
+                silo_dir: std::path::PathBuf::from(&silo_dir),
+                detail_model: std::path::PathBuf::from(&detail_model),
+                palette_name,
+                silo_steps,
+                detail_steps,
+                refine_from_t: refine_t,
+                cfg_scale: cfg,
+                seed,
+                palette_model: palette_model.map(std::path::PathBuf::from),
+                palette_colors: 8,
+            };
+            let images = tiered_pipeline::tiered_generate(&cond, &config, count)?;
+            if images.len() == 1 {
+                images[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&images, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {output}");
+        }
+        Cmd::PrepSiloCond { data, output } => {
+            use image::imageops::FilterType;
+
+            // Load source dataset (uses cache — guaranteed same count as training).
+            let src = train::preprocess(&data, 32)?;
+            let n = src.super_ids.len();
+            let sz = 32usize;
+            let n_px = sz * sz; // 1024 pixels per channel
+
+            println!("prep-silo-cond: coarsening {n} samples (32→16→32 nearest-neighbor)...");
+
+            let mut cond_pixels = Vec::with_capacity(n * src.stride);
+
+            for i in 0..n {
+                let base = i * src.stride;
+                // Build RGBA image from channel-first float pixels
+                let mut img = image::RgbaImage::new(sz as u32, sz as u32);
+                for y in 0..sz {
+                    for x in 0..sz {
+                        let idx = y * sz + x;
+                        let r = (src.pixels[base + idx]             * 255.0) as u8;
+                        let g = (src.pixels[base + n_px + idx]     * 255.0) as u8;
+                        let b = (src.pixels[base + 2 * n_px + idx] * 255.0) as u8;
+                        img.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, 255]));
+                    }
+                }
+                // 32x32 → 16x16 → 32x32: captures coarse shape/color like silo outputs
+                let small  = image::imageops::resize(&img,  16, 16, FilterType::Nearest);
+                let coarse = image::imageops::resize(&small, 32, 32, FilterType::Nearest);
+                // Convert back to channel-first f32
+                let mut px = vec![0.0f32; src.stride];
+                for y in 0..sz {
+                    for x in 0..sz {
+                        let p = coarse.get_pixel(x as u32, y as u32);
+                        let idx = y * sz + x;
+                        px[idx]             = p[0] as f32 / 255.0;
+                        px[n_px + idx]     = p[1] as f32 / 255.0;
+                        px[2 * n_px + idx] = p[2] as f32 / 255.0;
+                    }
+                }
+                cond_pixels.extend_from_slice(&px);
+            }
+
+            // Build conditioning dataset with same metadata as source
+            let cond_ds = train::PackedDataset {
+                version: src.version,
+                img_size: src.img_size,
+                pixels: cond_pixels,
+                labels: src.labels.clone(),
+                super_ids: src.super_ids.clone(),
+                tags: src.tags.clone(),
+                stride: src.stride,
+            };
+
+            // Write cache directly — preprocess() will load it without scanning dirs
+            std::fs::create_dir_all(&output)?;
+            let encoded = bincode::serialize(&cond_ds)?;
+            let compressed = zstd::encode_all(encoded.as_slice(), 3)?;
+            let cache_path = format!("{output}/dataset.bin.zst");
+            std::fs::write(&cache_path, &compressed)?;
+            println!("prep-silo-cond: {n} samples → {cache_path} ({:.1} MB)",
+                compressed.len() as f64 / 1_048_576.0);
+        }
+        Cmd::TrainPaletteNet { data, output, epochs, batch_size, lr, palette_colors } => {
+            palette_net::train_palette_net(&data, &output, epochs, batch_size, lr, palette_colors)?;
         }
     }
 

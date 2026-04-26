@@ -1,15 +1,19 @@
 // Unlicense — cochranblock.org
 
-// ── Palettes ──────────────────────────────
+// ── Palette (endesga32 — site default; pico-8 reserved for phone app) ───
 const PALETTES = {
-  stardew:   ['#1a1a2e','#2d5a1b','#5a8a34','#8ab464','#c8e8a0','#2e4a6e','#4a7aaa','#7aaad4','#e8d080','#d08040','#a04020','#e8a060','#f0e0c0','#ffffff','#808080','#404050'],
-  starbound:  ['#0d0d1a','#1a2a4a','#2a4a8a','#4a8aaa','#8aaac8','#c8d8e8','#e8eef8','#ffffff','#c85020','#e87030','#f0a040','#f0d060','#20a040','#40c060','#60e080','#80f0a0'],
-  snes:      ['#000000','#1c1c1c','#484848','#787878','#a8a8a8','#d8d8d8','#ffffff','#580000','#900000','#c80000','#ff0000','#ff6060','#004400','#006800','#009000','#00c000'],
-  nes:       ['#000000','#fcfcfc','#f8f8f8','#bcbcbc','#7c7c7c','#a4e4fc','#3cbcfc','#0078f8','#0000fc','#b8b8f8','#6888fc','#0058f8','#0000bc','#d8b8f8','#9878f8','#6844fc'],
-  gameboy:   ['#0f380f','#306230','#8bac0f','#9bbc0f'],
-  pico8:     ['#000000','#1d2b53','#7e2553','#008751','#ab5236','#5f574f','#c2c3c7','#fff1e8','#ff004d','#ffa300','#ffec27','#00e436','#29adff','#83769c','#ff77a8','#ffccaa'],
   endesga32: ['#be4a2f','#d77643','#ead4aa','#e4a672','#b86f50','#733e39','#3e2731','#a22633','#e43b44','#f77622','#feae34','#fee761','#63c74d','#3e8948','#265c42','#193c3e','#124e89','#0099db','#2ce8f5','#ffffff','#c0cbdc','#8b9bb4','#5a6988','#3a4466','#262b44','#181425','#ff0044','#68386c','#b55088','#f6757a','#e8b796','#c28569'],
 };
+
+const OUTLINE = '#181425'; // endesga32 near-black — consistent outline across all sprites
+
+// 2×2 Bayer matrix for ordered dithering (crisp shading bands, no random noise)
+const BAYER = [[0, 2], [3, 1]];
+
+function brightness(hex) {
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  return 0.299*r + 0.587*g + 0.114*b;
+}
 
 // ── PRNG (mulberry32 variant) ─────────────
 function mkRng(seed) {
@@ -106,38 +110,60 @@ function drawSprite(canvas, cls, palName, seed) {
   const px = new Uint8Array(S * S);
   const half = Math.ceil(S / 2);
 
-  // Sample 3 colors spread across the palette
-  const base = Math.floor(rng() * pal.length);
-  const n = pal.length;
-  const colors = [
-    null,
-    pal[base % n],
-    pal[(base + Math.floor(n * 0.3)) % n],
-    pal[(base + Math.floor(n * 0.6)) % n],
-  ];
+  // Zone-pick 3 colors: one from each brightness third — guaranteed contrast
+  const byBright = [...pal].sort((a, b) => brightness(a) - brightness(b));
+  const z = Math.floor(byBright.length / 3);
+  const dark  = byBright[Math.floor(rng() * z)];
+  const mid   = byBright[z   + Math.floor(rng() * z)];
+  const light = byBright[2*z + Math.floor(rng() * (byBright.length - 2*z))];
+  const colors = [null, dark, mid, light]; // 1=dark 2=mid 3=light
 
-  // Fill left half using class-specific silhouette
-  for (let y = 0; y < S; y++) {
+  // Fill left half — shape mask only (no color yet)
+  for (let y = 0; y < S; y++)
     for (let x = 0; x < half; x++) {
-      const nx = x / half;
-      const ny = y / S;
-      const d = shapeDensity(cls, nx, ny);
-      if (d <= 0 || rng() > d) continue;
-      const c = rng();
-      px[y * S + x] = c < 0.50 ? 1 : c < 0.85 ? 2 : 3;
+      const d = shapeDensity(cls, x / half, y / S);
+      if (d > 0 && rng() <= d) px[y * S + x] = 1;
     }
-  }
 
   // Mirror left→right
   for (let y = 0; y < S; y++)
     for (let x = 0; x < half; x++)
       px[y * S + (S - 1 - x)] = px[y * S + x];
 
-  // Render
+  // Bayer 2×2 ordered dithering — assign dark/mid/light per pixel
+  for (let y = 0; y < S; y++)
+    for (let x = 0; x < S; x++) {
+      if (!px[y * S + x]) continue;
+      const shade = 1 - y / S;
+      const bayer = BAYER[y % 2][x % 2] / 4.0;
+      const d = shade + (bayer - 0.5) * 0.35;
+      px[y * S + x] = d > 0.65 ? 3 : d > 0.35 ? 2 : 1;
+    }
+
+  // Rim light — top silhouette edge → lightest color
+  for (let y = 0; y < S; y++)
+    for (let x = 0; x < S; x++)
+      if (px[y * S + x] && (y === 0 || !px[(y - 1) * S + x]))
+        px[y * S + x] = 3;
+
+  // Outline pass — empty pixels touching a filled cardinal neighbor
+  const outline = new Uint8Array(S * S);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      if (px[y*S+x]) continue;
+      if ((y > 0   && px[(y-1)*S+x]) || (y < S-1 && px[(y+1)*S+x]) ||
+          (x > 0   && px[y*S+(x-1)]) || (x < S-1 && px[y*S+(x+1)])) {
+        outline[y*S+x] = 1;
+      }
+    }
+  }
+
+  // Render: outline then shaded fill
   ctx.clearRect(0, 0, S, S);
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
-      const c = px[y * S + x];
+      if (outline[y*S+x]) { ctx.fillStyle = OUTLINE; ctx.fillRect(x, y, 1, 1); continue; }
+      const c = px[y*S+x];
       if (!c) continue;
       ctx.fillStyle = colors[c];
       ctx.fillRect(x, y, 1, 1);
@@ -148,7 +174,6 @@ function drawSprite(canvas, cls, palName, seed) {
 // ── Generate section ──────────────────────
 function initGenerate() {
   const clsEl  = document.getElementById('gen-class');
-  const palEl  = document.getElementById('gen-palette');
   const cntEl  = document.getElementById('gen-count');
   const cntOut = document.getElementById('gen-count-out');
   const goBtn  = document.getElementById('gen-go');
@@ -159,7 +184,7 @@ function initGenerate() {
 
   goBtn.addEventListener('click', () => {
     const cls = clsEl.value;
-    const pal = palEl.value;
+    const pal = 'endesga32';
     const cnt = parseInt(cntEl.value, 10);
     status.textContent = `Generating ${cnt} ${cls}…`;
     grid.innerHTML = '';

@@ -40,6 +40,8 @@ pub mod quantize;
 pub mod relight;
 pub mod nanosign;
 pub mod sponge;
+pub mod tiered_pipeline;
+pub mod palette_net;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_backend;
 

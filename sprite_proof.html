@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Pixel Forge — Subcategory Proof</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0c0c12; color: #c8c8d8; font-family: 'Courier New', monospace; padding: 2rem; }
+h1 { color: #00d9ff; font-size: 1.1rem; letter-spacing: 0.1em; margin-bottom: 0.3rem; }
+.subtitle { color: #565670; font-size: 0.72rem; margin-bottom: 2.5rem; }
+.group { margin-bottom: 2.5rem; }
+.group-label {
+  font-size: 0.65rem; letter-spacing: 0.12em; color: #00d9ff;
+  border-bottom: 1px solid #2a2a40; padding-bottom: 0.4rem; margin-bottom: 1rem;
+}
+.subrow { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.55rem; flex-wrap: wrap; }
+.subrow-label { font-size: 0.65rem; color: #565670; width: 80px; flex-shrink: 0; text-align: right; padding-right: 0.5rem; border-right: 1px solid #2a2a40; }
+.sprites { display: flex; gap: 5px; flex-wrap: wrap; }
+canvas {
+  image-rendering: pixelated;
+  width: 64px; height: 64px;
+  border: 1px solid #2a2a40;
+}
+</style>
+</head>
+<body>
+<h1>▣ PIXEL FORGE — Subcategory Proof</h1>
+<p class="subtitle">8 groups · 32 classes · endesga32 · 6 seeds · procedural only</p>
+<div id="root"></div>
+<script>
+const PALETTES = {
+  endesga32: ['#be4a2f','#d77643','#ead4aa','#e4a672','#b86f50','#733e39','#3e2731','#a22633','#e43b44','#f77622','#feae34','#fee761','#63c74d','#3e8948','#265c42','#193c3e','#124e89','#0099db','#2ce8f5','#ffffff','#c0cbdc','#8b9bb4','#5a6988','#3a4466','#262b44','#181425','#ff0044','#68386c','#b55088','#f6757a','#e8b796','#c28569'],
+};
+
+const GROUPS = [
+  { label: 'CHARACTER', classes: ['warrior','mage','rogue','skeleton'] },
+  { label: 'WEAPON',    classes: ['sword','dagger','axe','staff','bow'] },
+  { label: 'CREATURE',  classes: ['dragon','slime','ghost'] },
+  { label: 'CONSUMABLE',classes: ['potion','bomb','lantern','scroll'] },
+  { label: 'NATURE',    classes: ['tree','pine','mushroom','bush'] },
+  { label: 'STRUCTURE', classes: ['building','house','tower','ruins'] },
+  { label: 'VEHICLE',   classes: ['vehicle','boat'] },
+  { label: 'FURNITURE', classes: ['furniture','chest','barrel','crate'] },
+];
+
+const PAL_NAMES = Object.keys(PALETTES);
+const SEEDS = ['42','99','777','1337','8675309','31415'];
+
+const OUTLINE = '#181425';
+const BAYER = [[0, 2], [3, 1]];
+function brightness(hex) {
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  return 0.299*r + 0.587*g + 0.114*b;
+}
+
+// ── PRNG ──────────────────────────────────
+function mkRng(seed) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(31, h) + seed.charCodeAt(i) | 0;
+  return function() {
+    h |= 0; h = h + 0x6D2B79F5 | 0;
+    let t = Math.imul(h ^ h >>> 15, 1 | h);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// ── Class silhouette density functions ───
+// nx: 0=left-outer-edge → 1=center (left half, mirrored to right)
+// ny: 0=top → 1=bottom
+// Returns fill probability; ≤0 = skip.
+function shapeDensity(cls, nx, ny) {
+  const e = 1 - nx; // e=0 at center, e=1 at outer edge
+
+  switch (cls) {
+
+    // ── CHARACTER family ──────────────────
+    case 'warrior': {
+      if (ny > 0.12 && ny < 0.22 && e > 0.20 && e < 0.36) return 0.09; // eyes (outboard of nose)
+      // Head: wider oval (e/0.44 = ~7px wide)
+      if (ny < 0.36) { const dx=e/0.44, dy=(ny-0.18)/0.18; return 1.1-dx*dx-dy*dy; }
+      // Neck: narrow connector to separate head from body
+      if (ny < 0.43) return e < 0.16 ? 0.88 : -1;
+      // Wide torso
+      if (ny < 0.70) return e < 0.63 ? 0.90 : -1;
+      // Legs
+      return (e > 0.15 && e < 0.50) ? 0.88 : -1;
+    }
+    case 'mage': {
+      // Hat: pointy triangle
+      if (ny < 0.22) return e < (0.22 - ny) * 1.6 + 0.04 ? 0.90 : -1;
+      if (ny > 0.30 && ny < 0.40 && e > 0.20 && e < 0.34) return 0.09; // eyes
+      // Head: connects under hat
+      if (ny < 0.52) { const dx=e/0.42, dy=(ny-0.36)/0.16; return 1.0-dx*dx-dy*dy; }
+      // Neck
+      if (ny < 0.57) return e < 0.16 ? 0.85 : -1;
+      // Robe: widens toward bottom
+      return e < 0.28 + (ny - 0.57) * 0.68 ? 0.88 : -1;
+    }
+    case 'rogue': {
+      if (ny > 0.13 && ny < 0.22 && e > 0.20 && e < 0.34) return 0.09; // eyes
+      // Head: slightly narrower than warrior
+      if (ny < 0.36) { const dx=e/0.40, dy=(ny-0.18)/0.18; return 1.0-dx*dx-dy*dy; }
+      // Neck
+      if (ny < 0.43) return e < 0.14 ? 0.88 : -1;
+      // Slim torso
+      if (ny < 0.70) return e < 0.40 ? 0.88 : -1;
+      return (e > 0.18 && e < 0.42) ? 0.85 : -1;
+    }
+    case 'skeleton': {
+      if (ny > 0.12 && ny < 0.22 && e > 0.20 && e < 0.34) return 0.06; // hollow skull sockets
+      // Skull: slightly narrower, round
+      if (ny < 0.36) { const dx=e/0.36, dy=(ny-0.18)/0.18; return 1.0-dx*dx-dy*dy; }
+      // Spine: very thin
+      if (ny < 0.58) return e < 0.12 ? 0.90 : -1;
+      // Hips
+      if (ny < 0.64) return e < 0.50 ? 0.85 : -1;
+      // Legs
+      return (e > 0.14 && e < 0.38) ? 0.85 : -1;
+    }
+
+    // ── WEAPON family ─────────────────────
+    case 'sword': {
+      if (e < 0.15 && ny < 0.78) return 0.95;
+      if (ny > 0.72 && ny < 0.84 && e < 0.72) return 0.92;
+      if (e < 0.15 && ny >= 0.84) return 0.88;
+      return -1;
+    }
+    case 'dagger': {
+      if (e < 0.15 && ny < 0.50) return 0.95;             // short blade
+      if (ny > 0.44 && ny < 0.54 && e < 0.48) return 0.90; // tiny guard
+      if (e < 0.15 && ny >= 0.54) return 0.88;            // handle
+      return -1;
+    }
+    case 'axe': {
+      // Wedge head at top; thin haft below
+      if (ny < 0.42) return e < ny * 0.95 + 0.18 ? 0.92 : -1;
+      if (ny < 0.52) return e < 0.20 ? 0.90 : -1;        // neck
+      return e < 0.12 ? 0.88 : -1;                        // haft
+    }
+    case 'staff': {
+      // Circle orb at top; thin shaft
+      if (ny < 0.30) { const dx=e/0.38, dy=(ny-0.15)/0.15; return 1.0-dx*dx-dy*dy; }
+      return e < 0.09 ? 0.92 : -1;
+    }
+    case 'bow': {
+      // Bowstring at center + arc stave curving outward
+      if (e < 0.07) return 0.72;                          // string
+      const arc = 0.56 * (1 - Math.abs(ny - 0.5) * 1.75) + 0.05;
+      if (arc < 0.06) return -1;
+      return Math.abs(e - arc) < 0.13 ? 0.88 : -1;
+    }
+
+    // ── CREATURE family ───────────────────
+    case 'dragon': {
+      const body = 0.9 - (e/0.78)*(e/0.78) - ((ny-0.45)/0.42)*((ny-0.45)/0.42);
+      const head = (ny < 0.30 && e < 0.50) ? 0.8-e*0.8-ny*1.8 : -1;
+      return Math.max(body, head);
+    }
+    case 'slime': {
+      // Bottom-heavy wide blob
+      const dx = e / 0.70, dy = (ny - 0.62) / 0.40;
+      return 1.05 - dx*dx - dy*dy;
+    }
+    case 'ghost': {
+      // Round head/body; wispy tendrils below
+      if (ny < 0.56) { const dx=e/0.52, dy=(ny-0.28)/0.30; return 1.05-dx*dx-dy*dy; }
+      const t1 = Math.abs(e - 0.04) < 0.09;
+      const t2 = Math.abs(e - 0.34) < 0.09;
+      return (t1 || t2) && ny < 0.94 ? 0.72 - (ny - 0.56) * 0.55 : -1;
+    }
+
+    // ── CONSUMABLE family ─────────────────
+    case 'potion': {
+      if (ny > 0.30) { const dx=e/0.56, dy=(ny-0.70)/0.31; return 1.1-dx*dx-dy*dy; }
+      return e < 0.20 ? 0.9 : -1;
+    }
+    case 'bomb': {
+      // Sphere + short fuse at top
+      if (ny < 0.14) return e < 0.11 ? 0.88 : -1;         // fuse
+      const dx = e/0.50, dy = (ny-0.60)/0.40;
+      return 1.05 - dx*dx - dy*dy;
+    }
+    case 'lantern': {
+      // Peaked cap; rectangular body; handle nub
+      if (ny < 0.22) return e < (0.22-ny)*1.6+0.05 ? 0.88 : -1;
+      if (ny < 0.82) return e < 0.44 ? 0.88 : -1;
+      return e < 0.14 ? 0.85 : -1;
+    }
+    case 'scroll': {
+      // Rounded top/bottom rolls; flat body
+      if (ny < 0.16) { const dx=e/0.42, dy=(ny-0.09)/0.09; return 1.0-dx*dx*1.5-dy*dy*1.5; }
+      if (ny > 0.84) { const dx=e/0.42, dy=(ny-0.91)/0.09; return 1.0-dx*dx*1.5-dy*dy*1.5; }
+      return e < 0.42 ? 0.88 : -1;
+    }
+
+    // ── NATURE family ─────────────────────
+    case 'tree': {
+      if (ny < 0.70) return e < ny*0.78+0.06 ? 0.9 : -1;
+      return e < 0.20 ? 0.85 : -1;
+    }
+    case 'pine': {
+      // Taller, narrower triangle; thin trunk
+      if (ny < 0.80) return e < ny*0.52+0.03 ? 0.9 : -1;
+      return e < 0.14 ? 0.85 : -1;
+    }
+    case 'mushroom': {
+      // Round cap; cylindrical stalk
+      if (ny < 0.55) { const dx=e/0.64, dy=(ny-0.24)/0.30; return 1.05-dx*dx-dy*dy; }
+      return e < 0.22 ? 0.88 : -1;
+    }
+    case 'bush': {
+      // Low wide oval
+      if (ny < 0.80) { const dx=e/0.70, dy=(ny-0.42)/0.42; return 1.0-dx*dx-dy*dy; }
+      return -1;
+    }
+
+    // ── STRUCTURE family ──────────────────
+    case 'building': {
+      if (e > 0.82) return -1;
+      if (ny > 0.28 && ny < 0.58 && e > 0.12 && e < 0.50) return 0.08;
+      return 0.92;
+    }
+    case 'house': {
+      // Triangle roof; walls with window
+      if (ny < 0.30) return e < (0.30-ny)*1.6 ? 0.9 : -1;
+      if (e > 0.74) return -1;
+      if (ny > 0.44 && ny < 0.72 && e > 0.10 && e < 0.46) return 0.08;
+      return 0.90;
+    }
+    case 'tower': {
+      // Narrow; battlements at top
+      if (ny < 0.10) return (e < 0.16 || (e > 0.28 && e < 0.42)) ? 0.92 : -1;
+      return e < 0.42 ? 0.90 : -1;
+    }
+    case 'ruins': {
+      // Broken top edge; crumbling wall
+      if (e > 0.78) return -1;
+      if (ny < 0.30) return e < 0.78*(1-ny*1.6) ? 0.85 : -1;
+      if (ny > 0.28 && ny < 0.55 && e > 0.15 && e < 0.52) return 0.06;
+      return 0.88;
+    }
+
+    // ── VEHICLE family ────────────────────
+    case 'vehicle': {
+      if (ny > 0.30 && ny < 0.70 && e < 0.88) return 0.92;
+      if (ny <= 0.30 && ny > 0.04 && e < 0.56) return 0.88;
+      const dx=(e-0.60)/0.18, dy=(ny-0.80)/0.18;
+      return ny > 0.62 ? 0.95-dx*dx*3-dy*dy*3 : -1;
+    }
+    case 'boat': {
+      // Flat deck + tapered hull below + mast
+      if (e < 0.08 && ny < 0.30) return 0.88;              // mast
+      if (ny > 0.28 && ny < 0.56 && e < 0.88) return 0.90; // deck/sides
+      if (ny >= 0.56) {
+        const maxE = 0.88 * (1 - ((ny-0.56)/0.40));
+        return e < maxE ? 0.88 : -1;                        // tapered hull
+      }
+      return -1;
+    }
+
+    // ── FURNITURE family ──────────────────
+    case 'furniture': {
+      if (ny < 0.18 && e < 0.88) return 0.92;
+      if (ny > 0.75 && e > 0.52 && e < 0.76) return 0.88;
+      return -1;
+    }
+    case 'chest': {
+      // Box: lid band + body
+      if (e > 0.80) return -1;
+      if (ny > 0.30 && ny < 0.42) return 0.95;  // lid line
+      return 0.90;
+    }
+    case 'barrel': {
+      // Rounded oval + hoop bands
+      const dx=e/0.55, dy=(ny-0.50)/0.48;
+      const body = 1.0-dx*dx-dy*dy;
+      if (body <= 0) return -1;
+      if (Math.abs(ny-0.18) < 0.04 || Math.abs(ny-0.82) < 0.04) return 0.95; // hoops
+      return 0.85;
+    }
+    case 'crate': {
+      // Box with cross brace
+      if (e > 0.80) return -1;
+      const braceE = Math.abs(ny - 0.50) * 0.72;
+      if (Math.abs(e - braceE) < 0.08) return 0.95;  // brace
+      return 0.88;
+    }
+
+    default: {
+      const dx=e/0.60, dy=(ny-0.5)/0.45;
+      return 0.9-dx*dx-dy*dy;
+    }
+  }
+}
+
+// ── Sprite renderer ───────────────────────
+function drawSprite(canvas, cls, palName, seed) {
+  const pal = PALETTES[palName] || PALETTES.endesga32;
+  const rng = mkRng(cls + seed);
+  const S = 16;
+  canvas.width = S; canvas.height = S;
+  const ctx = canvas.getContext('2d');
+  const px = new Uint8Array(S * S);
+  const half = Math.ceil(S / 2);
+
+  // Zone-pick 3 colors: one from each brightness third — guaranteed contrast
+  const byBright = [...pal].sort((a, b) => brightness(a) - brightness(b));
+  const z = Math.floor(byBright.length / 3);
+  const dark  = byBright[Math.floor(rng() * z)];
+  const mid   = byBright[z   + Math.floor(rng() * z)];
+  const light = byBright[2*z + Math.floor(rng() * (byBright.length - 2*z))];
+  const colors = [null, dark, mid, light];
+
+  // Fill left half — shape mask only
+  for (let y = 0; y < S; y++)
+    for (let x = 0; x < half; x++) {
+      const d = shapeDensity(cls, x/half, y/S);
+      if (d > 0 && rng() <= d) px[y*S+x] = 1;
+    }
+
+  // Mirror
+  for (let y=0;y<S;y++) for (let x=0;x<half;x++) px[y*S+(S-1-x)]=px[y*S+x];
+
+  // Bayer 2×2 dithering
+  for (let y=0;y<S;y++) for (let x=0;x<S;x++) {
+    if (!px[y*S+x]) continue;
+    const shade = 1 - y/S;
+    const bayer = BAYER[y%2][x%2] / 4.0;
+    const d = shade + (bayer - 0.5) * 0.35;
+    px[y*S+x] = d > 0.65 ? 3 : d > 0.35 ? 2 : 1;
+  }
+
+  // Rim light
+  for (let y=0;y<S;y++) for (let x=0;x<S;x++)
+    if (px[y*S+x] && (y===0 || !px[(y-1)*S+x])) px[y*S+x] = 3;
+
+  const outline = new Uint8Array(S*S);
+  for (let y=0;y<S;y++) for (let x=0;x<S;x++) {
+    if (px[y*S+x]) continue;
+    if ((y>0 && px[(y-1)*S+x])||(y<S-1 && px[(y+1)*S+x])||
+        (x>0 && px[y*S+(x-1)])||(x<S-1 && px[y*S+(x+1)])) outline[y*S+x]=1;
+  }
+
+  ctx.clearRect(0,0,S,S);
+  for (let y=0;y<S;y++) for (let x=0;x<S;x++) {
+    if (outline[y*S+x]) { ctx.fillStyle=OUTLINE; ctx.fillRect(x,y,1,1); continue; }
+    const c=px[y*S+x]; if(!c) continue;
+    ctx.fillStyle=colors[c]; ctx.fillRect(x,y,1,1);
+  }
+}
+
+// ── Build page ────────────────────────────
+const root = document.getElementById('root');
+for (const group of GROUPS) {
+  const gEl = document.createElement('div');
+  gEl.className = 'group';
+  gEl.innerHTML = `<div class="group-label">${group.label}</div>`;
+
+  for (const cls of group.classes) {
+    const row = document.createElement('div');
+    row.className = 'subrow';
+    row.innerHTML = `<div class="subrow-label">${cls}</div><div class="sprites" id="s-${cls}"></div>`;
+    gEl.appendChild(row);
+
+    const sprites = row.querySelector('.sprites');
+    for (const pal of PAL_NAMES) {
+      for (const seed of SEEDS) {
+        const c = document.createElement('canvas');
+        drawSprite(c, cls, pal, seed);
+        c.title = `${cls} / ${pal} / seed ${seed}`;
+        sprites.appendChild(c);
+      }
+    }
+  }
+  root.appendChild(gEl);
+}
+</script>
+</body>
+</html>

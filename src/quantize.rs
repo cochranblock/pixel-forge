@@ -35,6 +35,23 @@ pub fn detect_dtype(path: &str) -> Result<String> {
     Ok("F32".to_string())
 }
 
+/// Detect the number of input channels from a TinyUNet/MediumUNet model.
+/// Reads conv_in.weight shape from the safetensors header.
+/// Returns 3 for standard Cinder; 6 for conditioned Cinder-detail.
+pub fn detect_in_channels(path: &str) -> usize {
+    let Ok((header, _)) = read_safetensors(path) else { return 3; };
+    let Some(obj) = header.as_object() else { return 3; };
+    if let Some(w) = obj.get("conv_in.weight") {
+        if let Some(shape) = w.get("shape").and_then(|s| s.as_array()) {
+            // conv_in.weight shape: [out_ch, in_ch, kH, kW]
+            if let Some(in_ch) = shape.get(1).and_then(|v| v.as_u64()) {
+                return in_ch as usize;
+            }
+        }
+    }
+    3
+}
+
 /// Quantize a safetensors file from f32 to f16.
 /// Returns the output file size in bytes.
 pub fn quantize_f32_to_f16(input: &str, output: &str) -> Result<u64> {
@@ -157,31 +174,81 @@ pub fn candle_dtype_for(_path: &str) -> candle_core::DType {
     candle_core::DType::F32
 }
 
+/// Strip NanoSign trailing bytes from a buffer before passing to candle.
+/// candle's safetensors loader is strict: extra bytes cause MetadataIncompleteBuffer.
+fn strip_nanosign(data: &[u8]) -> &[u8] {
+    const MAGIC: &[u8; 4] = b"NSIG";
+    const LEN: usize = 36;
+    if data.len() >= LEN && &data[data.len() - LEN..data.len() - 32] == MAGIC {
+        &data[..data.len() - LEN]
+    } else {
+        data
+    }
+}
+
 /// Load a safetensors file into a VarMap, casting f16→f32 if needed.
+/// Transparently strips the NanoSign 36-byte signature before candle sees the buffer.
 pub fn load_varmap(varmap: &mut candle_nn::VarMap, path: &str) -> Result<()> {
     use candle_core::DType;
 
     crate::nanosign::verify_or_bail(path)?;
 
-    if is_f16(path) {
-        // Load raw tensors, cast f16→f32, then set in varmap
-        let tensors = candle_core::safetensors::load(path, &candle_core::Device::Cpu)?;
-        let data = varmap.data().lock().unwrap();
-        for (name, var) in data.iter() {
-            if let Some(src) = tensors.get(name) {
-                let src_f32 = if src.dtype() == DType::F16 {
-                    src.to_dtype(DType::F32)?
-                } else {
-                    src.clone()
-                };
-                var.set(&src_f32.to_device(var.device())?)?;
+    // Read raw bytes and strip NanoSign before handing to candle.
+    let raw = std::fs::read(path)?;
+    let buf = strip_nanosign(&raw);
+
+    let tensors = candle_core::safetensors::load_buffer(buf, &candle_core::Device::Cpu)?;
+    let data = varmap.data().lock().unwrap();
+    for (name, var) in data.iter() {
+        if let Some(src) = tensors.get(name) {
+            let src_f32 = if src.dtype() == DType::F16 {
+                src.to_dtype(DType::F32)?
+            } else {
+                src.clone()
+            };
+            var.set(&src_f32.to_device(var.device())?)?;
+        }
+    }
+    Ok(())
+}
+
+/// Like load_varmap but silently skips tensors whose shapes don't match.
+/// Used when resuming a 3ch model into a 6ch architecture (conv_in expands
+/// from [out, 3, kH, kW] to [out, 6, kH, kW]); the extra channels keep
+/// their random initialization while all other weights transfer cleanly.
+pub fn load_varmap_lenient(varmap: &mut candle_nn::VarMap, path: &str) -> Result<()> {
+    use candle_core::DType;
+
+    crate::nanosign::verify_or_bail(path)?;
+
+    let raw = std::fs::read(path)?;
+    let buf = strip_nanosign(&raw);
+
+    let tensors = candle_core::safetensors::load_buffer(buf, &candle_core::Device::Cpu)?;
+    let data = varmap.data().lock().unwrap();
+    let mut loaded = 0usize;
+    let mut skipped = 0usize;
+    for (name, var) in data.iter() {
+        if let Some(src) = tensors.get(name) {
+            let src_f32 = if src.dtype() == DType::F16 {
+                src.to_dtype(DType::F32)?
+            } else {
+                src.clone()
+            };
+            let src_dev = src_f32.to_device(var.device())?;
+            if src_dev.shape() == var.shape() {
+                var.set(&src_dev)?;
+                loaded += 1;
+            } else {
+                println!("  expand {name}: checkpoint {:?} → model {:?}", src_dev.shape(), var.shape());
+                skipped += 1;
             }
         }
-        Ok(())
-    } else {
-        varmap.load(path)?;
-        Ok(())
     }
+    if skipped > 0 {
+        println!("  loaded {loaded} tensors, {skipped} expanded (channel mismatch — random init kept)");
+    }
+    Ok(())
 }
 
 /// Quantize in place — writes f16 version next to the original.

@@ -905,8 +905,14 @@ pub fn train(config: &TrainConfig) -> Result<TrainStop> {
         let params = TinyUNet::param_count(&varmap);
         println!("model: Cinder (TinyUNet, {in_ch}ch), {} params ({:.1} MB)", params, params as f64 * 4.0 / 1_048_576.0);
         if let Some(ref checkpoint) = config.resume {
-            crate::nanosign::verify_or_bail(checkpoint)?;
-            varmap.load(checkpoint)?;
+            if in_ch > 3 {
+                // 6ch model: use lenient loader so conv_in.weight (3ch→6ch) stays
+                // at random init while all other weights transfer from the 3ch base.
+                crate::quantize::load_varmap_lenient(&mut varmap, checkpoint)?;
+            } else {
+                crate::nanosign::verify_or_bail(checkpoint)?;
+                varmap.load(checkpoint)?;
+            }
             println!("resumed from {checkpoint}");
         }
         train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
