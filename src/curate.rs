@@ -184,7 +184,8 @@ fn collect_pngs(dir: &Path) -> Result<Vec<(PathBuf, RgbaImage)>> {
 }
 
 /// Curate raw downloads into class-sorted training directories.
-pub fn curate(raw_dir: &str, output_dir: &str, target_size: u32) -> Result<()> {
+/// If `augment_below` > 0, classes with fewer than that many tiles get h-flip variants added.
+pub fn curate(raw_dir: &str, output_dir: &str, target_size: u32, augment_below: usize) -> Result<()> {
     let raw = Path::new(raw_dir);
     let out = Path::new(output_dir);
 
@@ -212,21 +213,17 @@ pub fn curate(raw_dir: &str, output_dir: &str, target_size: u32) -> Result<()> {
 
             // Decide: is this a sprite sheet or a single sprite?
             let tiles = if w > target_size * 2 || h > target_size * 2 {
-                // Likely a sprite sheet — try to detect tile size
                 let tile_size = detect_tile_size(w, h, target_size);
                 if tile_size > 0 {
                     slice_sheet(img, tile_size)
                 } else {
-                    // Can't detect tile grid — skip or use as single
                     vec![img.clone()]
                 }
             } else if w == target_size && h == target_size {
                 vec![img.clone()]
             } else if w <= target_size * 4 && h <= target_size * 4 {
-                // Small enough to be a single sprite — resize
                 vec![img.clone()]
             } else {
-                // Too big, unknown structure — skip
                 continue;
             };
 
@@ -256,6 +253,20 @@ pub fn curate(raw_dir: &str, output_dir: &str, target_size: u32) -> Result<()> {
         println!("    extracted {} tiles", source_count);
     }
 
+    // Augment small classes with h-flip variants
+    if augment_below > 0 {
+        println!("\n=== Augmenting small classes (threshold: {}) ===", augment_below);
+        for (class, &count) in &class_counts.clone() {
+            if count < augment_below {
+                let class_dir = out.join(class);
+                let flipped = augment_hflip(&class_dir, count)?;
+                println!("  {}: {} → {} (+{} h-flips)", class, count, count + flipped, flipped);
+                *class_counts.get_mut(class).unwrap() += flipped;
+                total += flipped;
+            }
+        }
+    }
+
     println!("\n=== Curation complete ===");
     println!("Total: {} tiles across {} classes", total, class_counts.len());
     for (class, count) in class_counts.iter() {
@@ -263,6 +274,27 @@ pub fn curate(raw_dir: &str, output_dir: &str, target_size: u32) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Add h-flip variants for all existing PNGs in a class dir.
+/// Returns the number of new files written.
+fn augment_hflip(class_dir: &Path, existing: usize) -> Result<usize> {
+    let pngs: Vec<PathBuf> = std::fs::read_dir(class_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x == "png"))
+        .filter(|p| !p.file_stem().map_or(false, |s| s.to_string_lossy().ends_with("_flip")))
+        .collect();
+
+    let mut written = 0;
+    for (i, path) in pngs.iter().enumerate() {
+        let img = image::open(path)?.to_rgba8();
+        let flipped = image::imageops::flip_horizontal(&img);
+        let out_name = format!("aug_flip_{:05}.png", existing + i);
+        flipped.save(class_dir.join(out_name))?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 /// Try to detect tile size from sheet dimensions.

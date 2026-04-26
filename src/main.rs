@@ -170,6 +170,9 @@ enum Cmd {
         /// Target tile size (square).
         #[arg(long, default_value_t = 32)]
         size: u32,
+        /// Augment classes with fewer than this many tiles by adding h-flip variants.
+        #[arg(long, default_value_t = 0)]
+        augment_below: usize,
     },
     /// Precompute per-class skeleton images from training data.
     /// Skeletons give the sampler a head start — 70% structure, 30% noise.
@@ -841,8 +844,8 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             pipeline::download_model()?;
             println!("model cached and ready");
         }
-        Cmd::Curate { raw, output, size } => {
-            curate::curate(&raw, &output, size)?;
+        Cmd::Curate { raw, output, size, augment_below } => {
+            curate::curate(&raw, &output, size, augment_below)?;
         }
         Cmd::StageCascade { class, sil_model, detail_model, count, sil_steps, detail_steps, palette: palette_name, output, four_dir, real_struct } => {
             let cond = class_cond::lookup(&class.to_lowercase());
