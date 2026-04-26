@@ -23,6 +23,78 @@ function mkRng(seed) {
   };
 }
 
+// ── Class-specific silhouette density ────────
+// nx: 0=outer edge → 1=center (left half, mirrored)
+// ny: 0=top → 1=bottom
+// Returns fill probability; ≤0 means skip.
+function shapeDensity(cls, nx, ny) {
+  const e = 1 - nx; // e=0 at center, e=1 at outer edge
+  switch (cls) {
+    case 'character': {
+      // Head: oval at top-center
+      if (ny < 0.42) {
+        const dx = e / 0.34, dy = (ny - 0.21) / 0.21;
+        return 1.1 - dx * dx - dy * dy;
+      }
+      // Torso
+      if (ny < 0.70) return e < 0.54 ? 0.9 : -1;
+      // Legs: two strips (gap at center so they read as separate)
+      return (e > 0.17 && e < 0.47) ? 0.88 : -1;
+    }
+    case 'dragon': {
+      // Wide oval body, heavier toward top (big head)
+      const body = 0.9 - (e / 0.78) * (e / 0.78) - ((ny - 0.45) / 0.42) * ((ny - 0.45) / 0.42);
+      // Head bump: fills inner half at very top
+      const head = (ny < 0.30 && e < 0.50) ? 0.8 - e * 0.8 - ny * 1.8 : -1;
+      return Math.max(body, head);
+    }
+    case 'sword': {
+      if (e < 0.15 && ny < 0.78) return 0.95;           // blade
+      if (ny > 0.72 && ny < 0.84 && e < 0.72) return 0.92; // crossguard
+      if (e < 0.15 && ny >= 0.84) return 0.88;           // handle
+      return -1;
+    }
+    case 'potion': {
+      // Round body
+      if (ny > 0.30) {
+        const dx = e / 0.56, dy = (ny - 0.70) / 0.31;
+        return 1.1 - dx * dx - dy * dy;
+      }
+      // Narrow neck
+      return e < 0.20 ? 0.9 : -1;
+    }
+    case 'tree': {
+      // Triangular canopy: maxEdge grows with ny
+      if (ny < 0.70) return e < ny * 0.78 + 0.06 ? 0.9 : -1;
+      // Thin trunk
+      return e < 0.20 ? 0.85 : -1;
+    }
+    case 'building': {
+      if (e > 0.82) return -1;
+      // Window cutout (low density = mostly dark gap)
+      if (ny > 0.28 && ny < 0.58 && e > 0.12 && e < 0.50) return 0.08;
+      return 0.92;
+    }
+    case 'vehicle': {
+      if (ny > 0.30 && ny < 0.70 && e < 0.88) return 0.92; // body
+      if (ny <= 0.30 && ny > 0.04 && e < 0.56) return 0.88; // cab
+      // Wheel: circle near outer-bottom
+      const dx = (e - 0.60) / 0.18, dy = (ny - 0.80) / 0.18;
+      return ny > 0.62 ? 0.95 - dx * dx * 3 - dy * dy * 3 : -1;
+    }
+    case 'furniture': {
+      if (ny < 0.18 && e < 0.88) return 0.92;              // tabletop
+      if (ny > 0.75 && e > 0.52 && e < 0.76) return 0.88;  // leg
+      return -1;
+    }
+    default: {
+      // Generic oval blob
+      const dx = e / 0.60, dy = (ny - 0.5) / 0.45;
+      return 0.9 - dx * dx - dy * dy;
+    }
+  }
+}
+
 // ── Procedural 16×16 sprite ───────────────
 function drawSprite(canvas, cls, palName, seed) {
   const pal = PALETTES[palName] || PALETTES.stardew;
@@ -34,29 +106,29 @@ function drawSprite(canvas, cls, palName, seed) {
   const px = new Uint8Array(S * S);
   const half = Math.ceil(S / 2);
 
-  // Sample 4 colors from palette using class-seeded offset
+  // Sample 3 colors spread across the palette
   const base = Math.floor(rng() * pal.length);
   const n = pal.length;
   const colors = [
     null,
     pal[base % n],
-    pal[(base + Math.floor(n * 0.2)) % n],
-    pal[(base + Math.floor(n * 0.5)) % n],
+    pal[(base + Math.floor(n * 0.3)) % n],
+    pal[(base + Math.floor(n * 0.6)) % n],
   ];
 
-  // Fill left half; edge bias gives silhouette shape
+  // Fill left half using class-specific silhouette
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < half; x++) {
-      const cx = x / half;
-      const cy = Math.abs((y / S) - 0.5) * 2;
-      const density = 0.65 * cx * (1 - cy * 0.6);
-      if (rng() > density) continue;
+      const nx = x / half;
+      const ny = y / S;
+      const d = shapeDensity(cls, nx, ny);
+      if (d <= 0 || rng() > d) continue;
       const c = rng();
-      px[y * S + x] = c < 0.55 ? 1 : c < 0.85 ? 2 : 3;
+      px[y * S + x] = c < 0.50 ? 1 : c < 0.85 ? 2 : 3;
     }
   }
 
-  // Mirror
+  // Mirror left→right
   for (let y = 0; y < S; y++)
     for (let x = 0; x < half; x++)
       px[y * S + (S - 1 - x)] = px[y * S + x];
