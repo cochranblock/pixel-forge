@@ -1,10 +1,10 @@
 // Pixel Forge service worker — aggressive offline caching.
-const CACHE = 'pixel-forge-v0.6.0';
+const CACHE = 'pixel-forge-v0.7.0';
 const ASSETS = [
   './',
   './index.html',
-  './pixel_forge.js',
-  './pixel_forge_bg.wasm',
+  './style.css',
+  './app.js',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',

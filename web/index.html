@@ -1,48 +1,239 @@
 <!DOCTYPE html>
+<!-- Unlicense — cochranblock.org -->
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="theme-color" content="#0c0c12">
-    <meta name="description" content="AI pixel art sprite generator. 108 classes. Runs offline.">
-    <link rel="manifest" href="manifest.json">
-    <link rel="apple-touch-icon" href="icon-192.png">
-    <title>Pixel Forge</title>
-    <style>
-        * { margin: 0; padding: 0; }
-        html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0c12; }
-        canvas { width: 100%; height: 100%; display: block; }
-        #loading {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: #00d9ff; font-family: monospace; font-size: 18px; text-align: center;
-        }
-        #loading .spinner { font-size: 32px; animation: spin 1s linear infinite; display: inline-block; }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0c0c12">
+<meta name="description" content="Pixel Forge — local-first AI pixel art generator. Open beta. Upload your sprites.">
+<meta property="og:title" content="Pixel Forge — Open Beta">
+<meta property="og:description" content="Generate pixel art sprites in your browser. Local-first. Upload to the community gallery.">
+<meta property="og:type" content="website">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+<title>Pixel Forge — Open Beta</title>
 </head>
 <body>
-    <div id="loading">
-        <div class="spinner">&#9881;</div>
-        <p>Loading Pixel Forge...</p>
-        <p style="font-size: 12px; color: #787c8c; margin-top: 8px;">First load downloads ~10 MB model</p>
-    </div>
-    <canvas id="canvas"></canvas>
 
-    <script>
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js');
-        }
-    </script>
-    <script type="module">
-        // wasm-bindgen generated glue — run after build:
-        // wasm-bindgen target/wasm32-unknown-unknown/release/pixel_forge.wasm --out-dir web/ --target web
-        import init from './pixel_forge.js';
-        init().then(() => {
-            document.getElementById('loading').style.display = 'none';
-        }).catch(e => {
-            document.getElementById('loading').innerHTML =
-                '<p style="color: #ff4444;">Failed to load: ' + e.message + '</p>';
-        });
-    </script>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">▣</span>
+    <span class="brand-name">PIXEL FORGE</span>
+    <span class="beta-tag" aria-label="Open Beta">OPEN BETA</span>
+  </div>
+  <nav class="topnav">
+    <a href="#play">Play</a>
+    <a href="#beta">Beta</a>
+    <a href="#upload">Upload</a>
+    <a href="#gallery">Gallery</a>
+    <a href="https://github.com/cochranblock/pixel-forge" target="_blank" rel="noopener">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+  <section class="hero">
+    <h1>Make pixel sprites. <span class="hero-accent">In your browser.</span></h1>
+    <p class="hero-sub">Local-first AI sprite generator. No login. No cloud. No tracking. Pick a square below.</p>
+  </section>
+
+  <!-- The four-quadrant puzzle. Pick one. That's the whole nav. -->
+  <section class="quad" aria-label="Pick a quadrant">
+    <a class="tile tile-play" href="#play">
+      <div class="tile-corner">01</div>
+      <div class="tile-icon">⚡</div>
+      <div class="tile-title">GENERATE</div>
+      <div class="tile-sub">Pick a class. Get a sprite.</div>
+    </a>
+    <a class="tile tile-beta" href="#beta">
+      <div class="tile-corner">02</div>
+      <div class="tile-icon">▶</div>
+      <div class="tile-title">TEST THE BETA</div>
+      <div class="tile-sub">Loads the full app in-browser.</div>
+    </a>
+    <a class="tile tile-upload" href="#upload">
+      <div class="tile-corner">03</div>
+      <div class="tile-icon">↥</div>
+      <div class="tile-title">UPLOAD A SPRITE</div>
+      <div class="tile-sub">Share what you made.</div>
+    </a>
+    <a class="tile tile-gallery" href="#gallery">
+      <div class="tile-corner">04</div>
+      <div class="tile-icon">▦</div>
+      <div class="tile-title">COMMUNITY GALLERY</div>
+      <div class="tile-sub">See what the forge made.</div>
+    </a>
+  </section>
+
+  <!-- 01 — GENERATE -->
+  <section id="play" class="panel">
+    <header class="panel-head">
+      <span class="panel-num">01</span>
+      <h2>Generate</h2>
+      <span class="panel-tag">demo</span>
+    </header>
+    <div class="gen">
+      <div class="gen-controls">
+        <label>
+          <span>Class</span>
+          <select id="gen-class">
+            <option value="character">character</option>
+            <option value="dragon">dragon</option>
+            <option value="sword">sword</option>
+            <option value="potion">potion</option>
+            <option value="tree">tree</option>
+            <option value="building">building</option>
+            <option value="vehicle">vehicle</option>
+            <option value="furniture">furniture</option>
+          </select>
+        </label>
+        <label>
+          <span>Palette</span>
+          <select id="gen-palette">
+            <option value="stardew">stardew</option>
+            <option value="starbound">starbound</option>
+            <option value="snes">snes</option>
+            <option value="nes">nes</option>
+            <option value="gameboy">gameboy</option>
+            <option value="pico8">pico-8</option>
+            <option value="endesga32">endesga-32</option>
+          </select>
+        </label>
+        <label>
+          <span>Count</span>
+          <input id="gen-count" type="range" min="1" max="16" value="4">
+          <output id="gen-count-out">4</output>
+        </label>
+        <button id="gen-go" class="btn-primary">Forge</button>
+      </div>
+      <div class="gen-stage">
+        <div id="gen-status" class="gen-status">Press Forge.</div>
+        <div id="gen-grid" class="gen-grid" aria-live="polite"></div>
+      </div>
+    </div>
+    <p class="panel-foot">
+      Demo uses a procedural placeholder so the page is instant.
+      For the real diffusion model, hop into <a href="#beta">Test the Beta</a>.
+    </p>
+  </section>
+
+  <!-- 02 — BETA -->
+  <section id="beta" class="panel">
+    <header class="panel-head">
+      <span class="panel-num">02</span>
+      <h2>Test the Beta</h2>
+      <span class="panel-tag warn">~10 MB model</span>
+    </header>
+    <p>The full pixel-forge runtime, compiled to WebAssembly. First load fetches the Cinder model (1.09M params, 4.2 MB) plus tokenizer assets. Runs entirely on your machine after that.</p>
+    <div class="beta-mount">
+      <button id="beta-launch" class="btn-secondary">Load Beta App</button>
+      <div id="beta-frame" class="beta-frame" hidden>
+        <div id="beta-loading">
+          <div class="spinner">⚙</div>
+          <p>Loading Pixel Forge…</p>
+          <p class="muted">First load downloads ~10 MB.</p>
+        </div>
+        <canvas id="canvas"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 — UPLOAD -->
+  <section id="upload" class="panel">
+    <header class="panel-head">
+      <span class="panel-num">03</span>
+      <h2>Upload a Sprite</h2>
+      <span class="panel-tag">community</span>
+    </header>
+    <p>Made something with Pixel Forge — or any tool — and want it in the gallery? Drop a PNG. Max 256×256, under 256 KB. CC0 by default; pick a license below.</p>
+
+    <form id="upload-form" class="upload">
+      <div id="dropzone" class="dropzone" tabindex="0">
+        <input id="file" type="file" accept="image/png" hidden>
+        <div class="dropzone-inner">
+          <div class="dropzone-icon">↥</div>
+          <div class="dropzone-text">Drop PNG here · or click to pick</div>
+          <div class="dropzone-hint">PNG only · ≤256×256 · ≤256 KB</div>
+        </div>
+        <img id="preview" alt="preview" hidden>
+      </div>
+
+      <div class="upload-meta">
+        <label>
+          <span>Title</span>
+          <input id="meta-title" maxlength="64" placeholder="goblin_archer_v3">
+        </label>
+        <label>
+          <span>Author</span>
+          <input id="meta-author" maxlength="64" placeholder="your handle">
+        </label>
+        <label>
+          <span>Class</span>
+          <select id="meta-class">
+            <option>character</option><option>monster</option>
+            <option>weapon</option><option>armor</option>
+            <option>nature</option><option>building</option>
+            <option>food</option><option>vehicle</option>
+            <option>furniture</option><option>ui</option>
+          </select>
+        </label>
+        <label>
+          <span>License</span>
+          <select id="meta-license">
+            <option value="CC0">CC0 — public domain</option>
+            <option value="CC-BY">CC-BY 4.0</option>
+            <option value="CC-BY-SA">CC-BY-SA 4.0</option>
+          </select>
+        </label>
+        <label class="check">
+          <input id="meta-orig" type="checkbox" required>
+          <span>I made this, or it's already CC0/public domain.</span>
+        </label>
+        <label class="check">
+          <input id="meta-clean" type="checkbox" required>
+          <span>No NSFW, no hate, no real-person likenesses.</span>
+        </label>
+      </div>
+
+      <div class="upload-actions">
+        <button type="submit" class="btn-primary" id="submit-btn" disabled>Submit Sprite</button>
+        <span id="upload-msg" class="upload-msg"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- 04 — GALLERY -->
+  <section id="gallery" class="panel">
+    <header class="panel-head">
+      <span class="panel-num">04</span>
+      <h2>Community Gallery</h2>
+      <span class="panel-tag">live</span>
+    </header>
+    <p>Recent submissions. Stored locally during the beta — server-backed gallery ships when moderation tooling lands.</p>
+    <div id="gallery-grid" class="gallery-grid"></div>
+    <p id="gallery-empty" class="muted">No submissions yet on this device. Be the first.</p>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-row">
+    <span>Pixel Forge · Open Beta · 2026</span>
+    <span>Part of the <a href="https://cochranblock.org" target="_blank" rel="noopener">CochranBlock</a> stack</span>
+    <span>Powered by <a href="https://github.com/cochranblock/kova" target="_blank" rel="noopener">KOVA</a></span>
+  </div>
+  <div class="footer-row tiny">
+    <span>No tracking. No accounts. No cloud inference.</span>
+    <span>Source: <a href="https://github.com/cochranblock/pixel-forge" target="_blank" rel="noopener">github.com/cochranblock/pixel-forge</a></span>
+  </div>
+</footer>
+
+<script src="app.js" type="module"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+</script>
 </body>
 </html>
