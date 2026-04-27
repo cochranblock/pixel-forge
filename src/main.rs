@@ -717,6 +717,33 @@ enum Cmd {
         #[arg(short, long, default_value = "tiered.png")]
         output: String,
     },
+    /// Train Cinder (TinyUNet) on AMD/Vulkan via any-gpu. Required for bt's
+    /// 5700 XT (no ROCm). Matches candle Cinder architecture; supports 6ch input
+    /// when --condition is supplied, and resume from a 3ch candle checkpoint.
+    #[cfg(feature = "vulkan")]
+    TrainCinderVk {
+        /// Path to training data directory.
+        #[arg(short, long, default_value = "data_v3_32")]
+        data: String,
+        /// Conditioning dir (for 6ch Cinder-detail). Same layout as --data.
+        #[arg(long)]
+        condition: Option<String>,
+        /// Output model file (.safetensors).
+        #[arg(short, long, default_value = "models/cinder-detail-vk.safetensors")]
+        output: String,
+        /// Resume from existing 3ch or 6ch candle checkpoint.
+        #[arg(long)]
+        resume: Option<String>,
+        /// Number of training epochs.
+        #[arg(short, long, default_value_t = 100)]
+        epochs: usize,
+        /// Batch size (large = more GPU efficiency, more VRAM).
+        #[arg(short, long, default_value_t = 16)]
+        batch_size: u32,
+        /// Learning rate.
+        #[arg(long, default_value_t = 1e-4)]
+        lr: f64,
+    },
     /// Generate conditioning data for 6ch Cinder-detail fine-tuning.
     /// Downscales each training image to 16x16 then back to 32x32 (nearest-neighbor),
     /// producing a coarse palette-quantized hint analogous to silo outputs.
@@ -2269,6 +2296,20 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 sheet_img.save(&output)?;
             }
             println!("saved: {output}");
+        }
+        #[cfg(feature = "vulkan")]
+        Cmd::TrainCinderVk { data, condition, output, resume, epochs, batch_size, lr } => {
+            let cfg = pixel_forge::vulkan_tiny::VulkanTinyTrainConfig {
+                data_dir: data,
+                cond_dir: condition,
+                output,
+                resume,
+                epochs,
+                batch_size,
+                lr,
+                img_size: 32,
+            };
+            pixel_forge::vulkan_tiny::vulkan_tiny_train(&cfg)?;
         }
         Cmd::PrepSiloCond { data, output } => {
             use image::imageops::FilterType;

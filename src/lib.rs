@@ -44,6 +44,8 @@ pub mod tiered_pipeline;
 pub mod palette_net;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_backend;
+#[cfg(feature = "vulkan")]
+pub mod vulkan_tiny;
 
 /// Recursively collect all .png files under a directory.
 pub fn walk_pngs(dir: &str) -> Vec<std::path::PathBuf> {
