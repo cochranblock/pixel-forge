@@ -756,6 +756,25 @@ enum Cmd {
         #[arg(short, long, default_value = "data_silo_cond_32")]
         output: String,
     },
+    /// A/B test whether a 6ch conditioned Cinder is actually using the conditioning
+    /// channel. Runs forward pass twice with the same noisy input but different
+    /// conditioning hints (real coarsened image vs random noise) and reports
+    /// per-pixel mean absolute difference. Large diff → model uses conditioning.
+    /// Tiny diff → model has learned to ignore the new channel.
+    InspectCond {
+        /// Path to a 6ch Cinder model (must be 6ch — checked via conv_in.weight shape).
+        #[arg(long)]
+        model: String,
+        /// Class to use for conditioning (must have a silo for real-cond mode).
+        #[arg(long, default_value = "building")]
+        class: String,
+        /// Number of test samples to average over.
+        #[arg(long, default_value_t = 4)]
+        count: u32,
+        /// Seed for reproducibility.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
     /// Train the PaletteNet — tiny MLP that predicts class-appropriate colors.
     /// Supervised from K-means dominant colors per class in training data.
     TrainPaletteNet {
@@ -2373,6 +2392,96 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             std::fs::write(&cache_path, &compressed)?;
             println!("prep-silo-cond: {n} samples → {cache_path} ({:.1} MB)",
                 compressed.len() as f64 / 1_048_576.0);
+        }
+        Cmd::InspectCond { model, class, count, seed } => {
+            use candle_core::{DType, Tensor};
+            use candle_nn::{VarBuilder, VarMap};
+
+            let in_ch = quantize::detect_in_channels(&model);
+            anyhow::ensure!(in_ch == 6, "InspectCond needs a 6ch model; got {in_ch}ch");
+
+            let device = pipeline::best_device();
+            println!("inspect-cond: {model} ({in_ch}ch), class={class}, count={count}, device={device:?}");
+
+            let mut vm = VarMap::new();
+            let vb = VarBuilder::from_varmap(&vm, DType::F32, &device);
+            let net = tiny_unet::TinyUNet::with_channels(vb, 6)?;
+            quantize::load_varmap(&mut vm, &model)?;
+
+            let cond = class_cond::lookup(&class.to_lowercase());
+            let (super_t, tags_t, _, _) = train::cond_tensors(&cond, 1, &device)?;
+
+            // Resolve a real silo for the class to produce a "real" conditioning hint.
+            let silo = tiered_pipeline::resolve_silo(&cond.name, std::path::Path::new("models"));
+            let real_hint = match &silo {
+                Some((silo_path, channels)) => {
+                    println!("  real cond from silo: {}", silo_path.display());
+                    let img = train::sample_micro(
+                        silo_path.to_str().unwrap_or(""),
+                        channels, 32, 1, 20, Some(seed),
+                    )?;
+                    let (w, h) = img[0].dimensions();
+                    let n = (w * h) as usize;
+                    let mut px = vec![0.0f32; 3 * n];
+                    for y in 0..h {
+                        for x in 0..w {
+                            let p = img[0].get_pixel(x, y);
+                            let i = (y * w + x) as usize;
+                            px[i]         = p[0] as f32 / 255.0;
+                            px[n + i]     = p[1] as f32 / 255.0;
+                            px[2 * n + i] = p[2] as f32 / 255.0;
+                        }
+                    }
+                    Tensor::from_vec(px, (1, 3, h as usize, w as usize), &device)?
+                }
+                None => {
+                    println!("  no silo for class — using deterministic gradient as real cond");
+                    let n = 32 * 32;
+                    let px: Vec<f32> = (0..3 * n).map(|i| (i as f32) / (3.0 * n as f32)).collect();
+                    Tensor::from_vec(px, (1usize, 3usize, 32usize, 32usize), &device)?
+                }
+            };
+
+            // Random "fake" hint at same magnitude — Gaussian noise scaled to roughly [0,1] range.
+            let fake_hint = train::seeded_noise(Some(seed.wrapping_add(999)), cond.super_id, 0, 32, &device)?
+                .broadcast_mul(&Tensor::new(&[0.5f32], &device)?)?
+                .broadcast_add(&Tensor::new(&[0.5f32], &device)?)?
+                .clamp(0.0, 1.0)?;
+
+            let mut total_diff = 0.0f32;
+            let mut total_real_mag = 0.0f32;
+            for i in 0..count {
+                let noisy = train::seeded_noise(Some(seed + i as u64), cond.super_id, i, 32, &device)?;
+                let amount = 0.45f32; // mid-noise level — where conditioning matters most
+                let t = Tensor::new(&[amount], &device)?;
+
+                let in_real = Tensor::cat(&[&real_hint, &noisy], 1)?;
+                let in_fake = Tensor::cat(&[&fake_hint, &noisy], 1)?;
+
+                let pred_real = net.forward(&in_real, &t, &super_t, &tags_t)?;
+                let pred_fake = net.forward(&in_fake, &t, &super_t, &tags_t)?;
+
+                let diff = (&pred_real - &pred_fake)?.abs()?.mean_all()?.to_scalar::<f32>()?;
+                let mag = pred_real.abs()?.mean_all()?.to_scalar::<f32>()?;
+                total_diff += diff;
+                total_real_mag += mag;
+                println!("  sample {i}: |Δ|={diff:.5}  |pred|={mag:.5}  ratio={:.3}", diff / mag.max(1e-8));
+            }
+
+            let avg_diff = total_diff / count as f32;
+            let avg_mag = total_real_mag / count as f32;
+            let ratio = avg_diff / avg_mag.max(1e-8);
+            println!("  avg |Δ|={avg_diff:.5}  avg |pred|={avg_mag:.5}  ratio={ratio:.3}");
+            println!();
+            if ratio < 0.01 {
+                println!("VERDICT: model is IGNORING the conditioning channel (Δ < 1% of pred magnitude).");
+            } else if ratio < 0.05 {
+                println!("VERDICT: model is barely using conditioning ({:.1}% effect).", ratio * 100.0);
+            } else if ratio < 0.20 {
+                println!("VERDICT: model is using conditioning ({:.1}% effect — moderate).", ratio * 100.0);
+            } else {
+                println!("VERDICT: model is strongly using conditioning ({:.1}% effect).", ratio * 100.0);
+            }
         }
         Cmd::TrainPaletteNet { data, output, epochs, batch_size, lr, palette_colors } => {
             palette_net::train_palette_net(&data, &output, epochs, batch_size, lr, palette_colors)?;

@@ -7,7 +7,7 @@ name = "pixel-forge"
 version = "0.6.0"
 edition = "2024"
 description = "Pixel art game asset generator. Stardew/Starbound quality. Local-first, no cloud."
-
+license = "Unlicense"
 [lib]
 name = "pixel_forge"
 path = "src/lib.rs"

@@ -877,6 +877,11 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
     if let Some(ref path) = cfg.resume {
         load_candle_safetensors(&mut params, path)?;
         println!("resumed from {path} (conv_in {}ch→{}ch tile-expand if needed)", 3, in_ch);
+        // Save the post-resume / pre-training state as a baseline checkpoint
+        // alongside the live output. Lets us A/B "as-resumed" vs "trained".
+        let baseline = format!("{}.epoch0", cfg.output);
+        save_candle_safetensors(&params, &baseline)?;
+        println!("baseline saved → {baseline}");
     }
 
     let mut opt = AdamW::new(cfg.lr as f32);
@@ -969,10 +974,8 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
         let dt = epoch_start.elapsed().as_secs_f32();
         println!("  vulkan epoch {}/{}: loss={:.5} ({:.1}s)", epoch + 1, cfg.epochs, avg, dt);
 
-        // Save every 10 epochs as recovery point
-        if (epoch + 1) % 10 == 0 || epoch + 1 == cfg.epochs {
-            save_candle_safetensors(&params, &cfg.output)?;
-        }
+        // Save every epoch — small file, lets us inspect conditioning behavior.
+        save_candle_safetensors(&params, &cfg.output)?;
     }
 
     println!("vulkan: done in {:.1}s, saved → {}", t0.elapsed().as_secs_f32(), cfg.output);
