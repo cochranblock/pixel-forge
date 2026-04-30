@@ -111,18 +111,41 @@
     <header class="panel-head">
       <span class="panel-num">02</span>
       <h2>Test the Beta</h2>
-      <span class="panel-tag warn">~10 MB model</span>
+      <span class="panel-tag warn">WebGPU · ~3 MB model</span>
     </header>
-    <p>The full pixel-forge runtime, compiled to WebAssembly. First load fetches the Cinder model (1.09M params, 4.2 MB) plus tokenizer assets. Runs entirely on your machine after that.</p>
+    <p>The Cinder diffusion model running in your browser on WebGPU via <a href="https://github.com/cochranblock/any-gpu" target="_blank" rel="noopener">any-gpu</a>. First load fetches a 2.2 MB f16 model and a ~350 KB wasm bundle. After that, everything runs on your GPU — no cloud, no upload.</p>
+    <div id="webgpu-warn" class="banner-warn" hidden>
+      Your browser doesn't expose WebGPU. Use Chrome, Edge, or Safari 18+, or
+      download the desktop binary from the
+      <a href="https://github.com/cochranblock/pixel-forge/releases" target="_blank" rel="noopener">releases page</a>.
+    </div>
     <div class="beta-mount">
       <button id="beta-launch" class="btn-secondary">Load Beta App</button>
       <div id="beta-frame" class="beta-frame" hidden>
         <div id="beta-loading">
           <div class="spinner">⚙</div>
-          <p>Loading Pixel Forge…</p>
-          <p class="muted">First load downloads ~10 MB.</p>
+          <p id="beta-loading-text">Loading Pixel Forge…</p>
+          <p class="muted">First load downloads ~3 MB.</p>
         </div>
-        <canvas id="canvas"></canvas>
+        <div id="beta-controls" class="beta-controls" hidden>
+          <label>
+            <span>Class</span>
+            <select id="beta-class"></select>
+          </label>
+          <label>
+            <span>Steps</span>
+            <input id="beta-steps" type="number" min="4" max="80" value="40">
+          </label>
+          <label>
+            <span>Seed</span>
+            <input id="beta-seed" type="number" min="0" max="4294967295" value="42">
+          </label>
+          <button id="beta-go" class="btn-primary">Generate</button>
+        </div>
+        <div id="beta-output" class="beta-output" hidden>
+          <img id="beta-img" alt="Generated sprite" width="256" height="256">
+          <p id="beta-stats" class="muted"></p>
+        </div>
       </div>
     </div>
   </section>

@@ -204,30 +204,119 @@ function initGenerate() {
   goBtn.click();
 }
 
-// ── Beta section ──────────────────────────
-function initBeta() {
-  const btn   = document.getElementById('beta-launch');
-  const frame = document.getElementById('beta-frame');
+// ── Beta section — real WebGPU pipeline via pkg/ ──────────────────────────
+//
+// On click: load wasm-bindgen module, init device, fetch model bytes, hand
+// them to the rust runtime. Then bind the in-frame Generate button to call
+// generate(class, seed, steps) and display the returned PNG.
 
-  btn.addEventListener('click', () => {
-    frame.hidden = false;
+const BETA_CLASSES = [
+  // 16 hand-picked classes that the model has the most coverage on.
+  // Matches the desktop CLI defaults; not exhaustive.
+  'character', 'knight', 'goblin', 'skeleton',
+  'dragon', 'demon', 'slime', 'ghost',
+  'sword', 'staff_wand', 'shield', 'potion',
+  'tree', 'building', 'food', 'gem_treasure',
+];
+
+function initBetaPreflight() {
+  // Cheap check on page load. Run before the user clicks anything heavy.
+  const warn = document.getElementById('webgpu-warn');
+  const launch = document.getElementById('beta-launch');
+  if (typeof navigator === 'undefined' || !navigator.gpu) {
+    if (warn) warn.hidden = false;
+    if (launch) {
+      launch.disabled = true;
+      launch.textContent = 'WebGPU unavailable';
+    }
+  }
+}
+
+async function initBeta() {
+  const btn        = document.getElementById('beta-launch');
+  const frame      = document.getElementById('beta-frame');
+  const loading    = document.getElementById('beta-loading');
+  const loadText   = document.getElementById('beta-loading-text');
+  const controls   = document.getElementById('beta-controls');
+  const output     = document.getElementById('beta-output');
+  const classSel   = document.getElementById('beta-class');
+  const stepsIn    = document.getElementById('beta-steps');
+  const seedIn     = document.getElementById('beta-seed');
+  const goBtn      = document.getElementById('beta-go');
+  const img        = document.getElementById('beta-img');
+  const stats      = document.getElementById('beta-stats');
+
+  // Populate class dropdown.
+  for (const c of BETA_CLASSES) {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    classSel.appendChild(opt);
+  }
+
+  let runtime = null; // imported pkg, set after first load
+
+  btn.addEventListener('click', async () => {
+    if (!navigator.gpu) {
+      document.getElementById('webgpu-warn').hidden = false;
+      return;
+    }
     btn.hidden = true;
-    // Attempt to load the WASM binary if deployed alongside this page.
-    // Falls back gracefully — the spinner stays visible until init() resolves.
-    const s = document.createElement('script');
-    s.type = 'module';
-    s.textContent = `
-      import init from './pixel_forge.js';
-      init('./pixel_forge_bg.wasm')
-        .then(() => {
-          document.getElementById('beta-loading').hidden = true;
-        })
-        .catch(() => {
-          const el = document.getElementById('beta-loading');
-          el.innerHTML = '<p style="color:var(--orange)">Beta build not deployed yet.<br>Run <code>cargo build --release -p pixel-forge</code> and serve from <code>web/</code>.</p>';
-        });
-    `;
-    document.head.appendChild(s);
+    frame.hidden = false;
+
+    try {
+      loadText.textContent = 'Loading runtime…';
+      const mod = await import('./pkg/pixel_forge_wasm.js');
+      await mod.default();
+      mod.init_panic_hook();
+
+      if (!mod.webgpu_available()) {
+        throw new Error('navigator.gpu disappeared after wasm init');
+      }
+
+      loadText.textContent = 'Booting GPU…';
+      const banner = await mod.boot();
+
+      loadText.textContent = 'Fetching model (2.2 MB)…';
+      const resp = await fetch('./models/cinder.safetensors');
+      if (!resp.ok) throw new Error(`model fetch ${resp.status}`);
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+
+      loadText.textContent = 'Uploading weights…';
+      const param_count = mod.load_model(bytes);
+
+      runtime = mod;
+      loading.hidden = true;
+      controls.hidden = false;
+      stats.textContent = `Ready — ${banner} · ${(param_count / 1e6).toFixed(2)}M weights`;
+      output.hidden = false;
+    } catch (err) {
+      loading.innerHTML =
+        '<p style="color:var(--orange)">Beta failed to load:<br><code>' +
+        String(err).replace(/</g, '&lt;') +
+        '</code></p>';
+    }
+  });
+
+  goBtn.addEventListener('click', async () => {
+    if (!runtime) return;
+    goBtn.disabled = true;
+    const cls = classSel.value;
+    const seed = parseInt(seedIn.value, 10) >>> 0;
+    const steps = Math.max(4, Math.min(80, parseInt(stepsIn.value, 10) || 40));
+    stats.textContent = `Generating ${cls}…`;
+    const t0 = performance.now();
+    try {
+      const png = await runtime.generate(cls, seed, steps);
+      const blob = new Blob([png], { type: 'image/png' });
+      img.src = URL.createObjectURL(blob);
+      const ms = (performance.now() - t0).toFixed(0);
+      stats.textContent = `${cls} · seed ${seed} · ${steps} steps · ${ms} ms`;
+    } catch (err) {
+      stats.textContent = 'Generate failed: ' + String(err);
+    } finally {
+      goBtn.disabled = false;
+    }
   });
 }
 
@@ -352,6 +441,7 @@ function esc(s) {
 
 // ── Boot ──────────────────────────────────
 initGenerate();
+initBetaPreflight();
 initBeta();
 initUpload();
 refreshGallery();

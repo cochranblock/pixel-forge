@@ -260,6 +260,64 @@ main {
 .spinner { font-size: 2rem; animation: spin 1s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+.banner-warn {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--orange);
+  border-radius: 4px;
+  color: var(--orange);
+  background: rgba(255, 122, 0, 0.06);
+  font-size: 0.92rem;
+}
+.banner-warn a { color: var(--orange); }
+
+.beta-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: end;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+}
+.beta-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.82rem;
+  color: var(--muted);
+  gap: 0.2rem;
+}
+.beta-controls select,
+.beta-controls input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  min-width: 7rem;
+}
+.beta-controls .btn-primary {
+  align-self: end;
+  margin-left: auto;
+}
+
+.beta-output {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+}
+.beta-output img {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
 /* ── Upload ──────────────────────────────── */
 
 .upload {
