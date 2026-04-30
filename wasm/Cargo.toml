@@ -1,0 +1,41 @@
+# Unlicense — cochranblock.org
+
+[package]
+name = "pixel-forge-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Pixel Forge browser runtime — Cinder TinyUNet on WebGPU via any-gpu."
+license = "Unlicense"
+repository = "https://github.com/cochranblock/pixel-forge"
+
+[lib]
+crate-type = ["cdylib"]
+
+# Skip wasm-opt — the version wasm-pack bundles can't validate the bulk-memory
+# ops modern wasm-bindgen emits. Bundle is already opt-level=z + LTO + strip.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+any-gpu = { path = "../../any-gpu" }
+anyhow = "1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+safetensors = "0.4"
+half = "2"
+png = "0.17"
+rand = "0.8"
+rand_chacha = "0.3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]

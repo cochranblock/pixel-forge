@@ -22,3 +22,9 @@ android/app/src/main/jniLibs/
 android/upload-keystore.jks
 android/play-service-account.json
 android/local.properties
+
+# wasm beta — built artifacts (re-emitted by `wasm-pack build wasm/ --target web --out-dir ../web/pkg`)
+wasm/target/
+wasm/Cargo.lock
+web/pkg/
+web/models/
