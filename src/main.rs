@@ -756,6 +756,17 @@ enum Cmd {
         #[arg(short, long, default_value = "data_silo_cond_32")]
         output: String,
     },
+    /// Compute per-channel mean/std of the training set for z-score
+    /// normalization. Run once per dataset; writes a small JSON manifest
+    /// that the trainer + sampler load to map [0,1] → ~N(0,1).
+    NormalizeStats {
+        /// Training data directory (uses the standard preprocess cache).
+        #[arg(short, long, default_value = "data_v3_32")]
+        data: String,
+        /// Output JSON manifest path.
+        #[arg(short, long, default_value = "data_v3_32/normalize.json")]
+        output: String,
+    },
     /// A/B test whether a 6ch conditioned Cinder is actually using the conditioning
     /// channel. Runs forward pass twice with the same noisy input but different
     /// conditioning hints (real coarsened image vs random noise) and reports
@@ -2392,6 +2403,53 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             std::fs::write(&cache_path, &compressed)?;
             println!("prep-silo-cond: {n} samples → {cache_path} ({:.1} MB)",
                 compressed.len() as f64 / 1_048_576.0);
+        }
+        Cmd::NormalizeStats { data, output } => {
+            // Single-pass per-channel mean/std on the standard preprocess cache.
+            // f64 accumulators — ~20M samples per channel stays well inside f64.
+            let src = train::preprocess(&data, 32)?;
+            let n = src.super_ids.len();
+            let n_px = (src.img_size * src.img_size) as usize;
+
+            let mut sum = [0f64; 3];
+            let mut sumsq = [0f64; 3];
+            let total = (n * n_px) as f64;
+
+            for i in 0..n {
+                let base = i * src.stride;
+                for c in 0..3 {
+                    let off = base + c * n_px;
+                    for k in 0..n_px {
+                        let v = src.pixels[off + k] as f64;
+                        sum[c] += v;
+                        sumsq[c] += v * v;
+                    }
+                }
+            }
+
+            let mean = [sum[0] / total, sum[1] / total, sum[2] / total];
+            let var = [
+                (sumsq[0] / total - mean[0] * mean[0]).max(0.0),
+                (sumsq[1] / total - mean[1] * mean[1]).max(0.0),
+                (sumsq[2] / total - mean[2] * mean[2]).max(0.0),
+            ];
+            let std = [var[0].sqrt(), var[1].sqrt(), var[2].sqrt()];
+
+            let manifest = serde_json::json!({
+                "version": 1,
+                "channels": 3,
+                "img_size": src.img_size,
+                "sample_count": n,
+                "pixel_count": total as u64,
+                "mean": mean,
+                "std":  std,
+                "note": "input space [0,1]; apply (x - mean)/std to enter z-space, invert with x*std + mean before clamp/encode",
+            });
+            std::fs::write(&output, serde_json::to_vec_pretty(&manifest)?)?;
+
+            println!("normalize-stats: {n} samples × {n_px} px → {output}");
+            println!("  mean = [{:.5}, {:.5}, {:.5}]", mean[0], mean[1], mean[2]);
+            println!("  std  = [{:.5}, {:.5}, {:.5}]", std[0],  std[1],  std[2]);
         }
         Cmd::InspectCond { model, class, count, seed } => {
             use candle_core::{DType, Tensor};
