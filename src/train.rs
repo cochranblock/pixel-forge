@@ -526,13 +526,23 @@ fn rot90_cw(px: &mut [f32], img_size: u32) {
 
 /// Corrupt: x_noisy = x * (1 - amount) + noise * amount
 /// Uses Gaussian N(0,1) noise — signal in [0,1], noise centered at 0.
-/// This gives the model amplitude cues to separate signal from noise.
+/// Legacy linear-blend; the EDM trainer/sampler use σ-scaled noise instead.
+#[allow(dead_code)]
 fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<(Tensor, Tensor)> {
     let noise = Tensor::randn(0f32, 1f32, x.shape(), device)?.to_dtype(x.dtype())?;
     let a = amount.unsqueeze(1)?.unsqueeze(2)?.unsqueeze(3)?;
     let one_minus_a = a.ones_like()?.broadcast_sub(&a)?;
     let noisy = (x.broadcast_mul(&one_minus_a)? + noise.broadcast_mul(&a)?)?;
     Ok((noisy, noise))
+}
+
+/// Scale a (B, C, H, W) tensor by a per-sample scalar via (B,1,1,1)
+/// broadcast. Used by the EDM trainer to apply c_in to each batch element
+/// without a Python-style loop over the GPU tensor.
+fn scale_per_sample(x: &Tensor, scales: &[f32], device: &Device) -> candle_core::Result<Tensor> {
+    let bs = scales.len();
+    let s = Tensor::new(scales, device)?.reshape((bs, 1, 1, 1))?;
+    x.broadcast_mul(&s)
 }
 
 /// Save model weights with optional v_pred marker tensor.
@@ -709,11 +719,10 @@ fn train_inner(
                     }
                 }
 
-                // Apply z-score AFTER augmentations (which assume [0,1]) so
-                // the noise schedule sees ~N(0,1) data. corrupt() adds N(0,1)
-                // noise; magnitudes only match in z-space.
+                // EDM expects centered (mean-only) data — c_in handles
+                // the σ-rescale at every noise level inside the train step.
                 let n_px = (config.img_size * config.img_size) as usize;
-                normalizer.to_z_pixels(&mut sample, n_px);
+                normalizer.center_pixels(&mut sample, n_px);
 
                 batch_px.extend_from_slice(&sample);
 
@@ -735,65 +744,76 @@ fn train_inner(
             let tags_batch = Tensor::new(batch_tags.as_slice(), device)?
                 .reshape((bs, crate::class_cond::NUM_TAGS))?;
 
-            // Noise schedule: cosine or linear
-            let noise_raw = Tensor::rand(0f32, 1f32, (bs,), device)?;
-            let noise_amount = if config.cosine_schedule {
-                let raw_vals = noise_raw.to_vec1::<f32>()?;
-                let scheduled: Vec<f32> = raw_vals.iter().map(|&t| cosine_schedule(t)).collect();
-                Tensor::new(scheduled.as_slice(), device)?
-            } else {
-                noise_raw
-            };
+            // EDM noise schedule: per-sample σ ~ log-normal(P_MEAN, P_STD).
+            // Replaces the old cosine/linear t∈[0,1] schedule.
+            let mut sigmas_vec = Vec::with_capacity(bs);
+            for _ in 0..bs {
+                sigmas_vec.push(crate::precond::sigma_from_uniform(rng.r#gen::<f32>()));
+            }
+            let sigma_data = normalizer.sigma_data();
+            let coeffs: Vec<crate::precond::EdmCoeffs> = sigmas_vec.iter()
+                .map(|&s| crate::precond::EdmCoeffs::at(s, sigma_data))
+                .collect();
 
-            // TODO: f16 training blocked on Candle autocast support.
-            // UNets are dtype-aware (store vb.dtype()) but optimizer needs f32 vars.
-
-            let (noisy_x, noise) = corrupt(&x_batch, &noise_amount, device)?;
+            // x_noisy = clean + σ·ε; broadcast σ across (3, H, W).
+            let noise = Tensor::randn(0f32, 1f32, x_batch.shape(), device)?;
+            let sigma_t = Tensor::new(sigmas_vec.as_slice(), device)?
+                .reshape((bs, 1, 1, 1))?;
+            let x_noisy = (&x_batch + noise.broadcast_mul(&sigma_t)?)?;
 
             // For conditioned training, concat conditioning channels to input.
-            // Z-score the cond channels with the same stats so all model
-            // inputs live in one space.
-            let model_input = if let Some(cond) = cond_dataset {
+            // The cond channels stay in centered (not σ-scaled) space — they
+            // carry coarse structure that doesn't need σ-rescaling.
+            let model_input_raw = if let Some(cond) = cond_dataset {
                 let mut cond_px = Vec::with_capacity(bs * stride);
                 let n_px = (config.img_size * config.img_size) as usize;
                 for &idx in &indices[start..end] {
                     let src_start = idx * stride;
                     let mut sample = cond.pixels[src_start..src_start + stride].to_vec();
-                    normalizer.to_z_pixels(&mut sample, n_px);
+                    normalizer.center_pixels(&mut sample, n_px);
                     cond_px.extend_from_slice(&sample);
                 }
                 let cond_batch = Tensor::new(cond_px.as_slice(), device)?
                     .reshape((bs, 3, sz, sz))?;
-                Tensor::cat(&[&cond_batch, &noisy_x], 1)? // (B, 6, H, W)
+                let scaled_noisy = scale_per_sample(&x_noisy, &coeffs.iter()
+                    .map(|c| c.c_in).collect::<Vec<_>>(), device)?;
+                Tensor::cat(&[&cond_batch, &scaled_noisy], 1)? // (B, 6, H, W)
             } else {
-                noisy_x.clone()
+                scale_per_sample(&x_noisy, &coeffs.iter()
+                    .map(|c| c.c_in).collect::<Vec<_>>(), device)?
             };
 
-            let pred = model.forward(&model_input, &noise_amount, &super_batch, &tags_batch)?;
+            // Time conditioning is c_noise = 0.25·log(σ).
+            let c_noise: Vec<f32> = coeffs.iter().map(|c| c.c_noise).collect();
+            let t_cnoise = Tensor::new(c_noise.as_slice(), device)?;
 
-            // Prediction target:
-            // - v-pred: predict velocity = noise - clean
-            // - clean: predict the clean image directly
-            let target = if config.v_prediction {
-                (&noise - &x_batch)?
-            } else {
-                x_batch.clone()
-            };
-            let per_sample_loss = (&pred - &target)?.sqr()?;
+            let pred = model.forward(&model_input_raw, &t_cnoise, &super_batch, &tags_batch)?;
 
-            // Min-SNR weighting
-            let loss = if config.min_snr_gamma > 0.0 {
-                let noise_vals = noise_amount.to_vec1::<f32>()?;
-                let weights: Vec<f32> = noise_vals.iter()
-                    .map(|&t| min_snr_weight(t, config.min_snr_gamma))
-                    .collect();
-                let w = Tensor::new(weights.as_slice(), device)?
-                    .unsqueeze(1)?.unsqueeze(2)?.unsqueeze(3)?;
-                let weighted = per_sample_loss.broadcast_mul(&w)?;
-                weighted.mean_all()?
-            } else {
-                per_sample_loss.mean_all()?
-            };
+            // EDM target for the network's raw output F:
+            //   target = (clean − c_skip · x_noisy) / c_out
+            // Loss = λ(σ) · ||F − target||² (Min-SNR-γ clamped at γ=5 inside
+            // EdmCoeffs::at). Implementation: pre-scale pred and target by
+            // √λ so plain MSE matches the weighted formulation.
+            let cskip_v: Vec<f32> = coeffs.iter().map(|c| c.c_skip).collect();
+            let cout_v:  Vec<f32> = coeffs.iter().map(|c| c.c_out).collect();
+            let cskip_t = Tensor::new(cskip_v.as_slice(), device)?
+                .reshape((bs, 1, 1, 1))?;
+            let cout_t = Tensor::new(cout_v.as_slice(), device)?
+                .reshape((bs, 1, 1, 1))?;
+            let target = ((&x_batch - x_noisy.broadcast_mul(&cskip_t)?)?
+                .broadcast_div(&cout_t))?;
+
+            let sqrt_w: Vec<f32> = coeffs.iter().map(|c| c.loss_weight.sqrt()).collect();
+            let sqrt_w_t = Tensor::new(sqrt_w.as_slice(), device)?
+                .reshape((bs, 1, 1, 1))?;
+            let pred_w   = pred.broadcast_mul(&sqrt_w_t)?;
+            let target_w = target.broadcast_mul(&sqrt_w_t)?;
+            let per_sample_loss = (&pred_w - &target_w)?.sqr()?;
+            // EDM's λ(σ) is already baked into pred_w/target_w (sqrt-weighted),
+            // so plain mean is the weighted MSE. Min-SNR-γ clamping happens
+            // inside EdmCoeffs::at — config.min_snr_gamma is now ignored on
+            // the EDM path.
+            let loss = per_sample_loss.mean_all()?;
 
             opt.backward_step(&loss)?;
 
@@ -1447,79 +1467,62 @@ pub fn sample_medium_seeded_cfg(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = MediumUNet::new(vb)?;
-    let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
     let normalizer = crate::normalize::Normalizer::load_sidecar(std::path::Path::new(model_path))?
         .ok_or_else(|| anyhow::anyhow!("model {} is missing required normalize.json sidecar", model_path))?;
     let params = MediumUNet::param_count(&varmap);
-    let pred_tag = if is_v_pred { ", v-pred" } else { "" };
-    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}, z-score",
+    let sigma_data = normalizer.sigma_data();
+    println!("model: Quench, {} params, sampling {} images, EDM Euler {steps} steps, cfg={}, σ_data={sigma_data:.4}",
         params, count, cfg_scale);
 
     let n = count as usize;
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
 
-    let class_id = cond.super_id;
-
     if let Some(s) = seed {
         println!("  seed: {s}");
     }
 
-    let maybe_skel = load_skeleton_v2(&cond.name, img_size, &device);
-    if maybe_skel.is_some() {
-        println!("  skeleton: class={}", cond.name);
-    }
-
+    // EDM init: x = N(0,1) · σ_max. No skeleton — incompatible with
+    // σ-parameterized noise space.
+    let class_id = cond.super_id;
     let init_tensors: Vec<Tensor> = (0..count)
-        .map(|i| {
-            if let Some(ref skel) = maybe_skel {
-                skeleton_start(skel, seed, class_id, i, img_size, &device)
-                    .and_then(|t| t.squeeze(0))
-            } else {
-                seeded_noise(seed, class_id, i, img_size, &device)
-                    .and_then(|t| t.squeeze(0))
-            }
-        })
+        .map(|i| seeded_noise(seed, class_id, i, img_size, &device)
+            .and_then(|t| t.squeeze(0)))
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?;
-    if maybe_skel.is_some() {
-        let mean = Tensor::new(&normalizer.mean[..], &device)?.reshape((1, 3, 1, 1))?;
-        let std  = Tensor::new(&normalizer.std[..],  &device)?.reshape((1, 3, 1, 1))?;
-        x = x.broadcast_sub(&mean)?.broadcast_div(&std)?;
-    }
+    let sigmas = crate::precond::sampling_sigmas(steps);
+    x = (x * sigmas[0] as f64)?;
 
-    let max_noise: f32 = 1.0;
+    let make_scalar = |v: f32| -> candle_core::Result<Tensor> {
+        Tensor::new(&[v], &device)?.reshape((1, 1, 1, 1))
+    };
 
-    for step in 0..steps {
-        let t_frac = 1.0 - (step as f32 / steps as f32);
-        let amount = cosine_schedule(t_frac) * max_noise;
-        let next_amount = if step + 1 < steps {
-            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
-            cosine_schedule(next_frac) * max_noise
+    for i in 0..steps {
+        let s_cur  = sigmas[i];
+        let s_next = sigmas[i + 1];
+        let coeffs = crate::precond::EdmCoeffs::at(s_cur, sigma_data);
+
+        let t_cnoise = Tensor::new(&vec![coeffs.c_noise; count as usize][..], &device)?;
+        let x_in = (&x * coeffs.c_in as f64)?;
+        let f = cfg_denoise(&model, &x_in, &t_cnoise,
+            &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?;
+        let cskip = make_scalar(coeffs.c_skip)?;
+        let cout  = make_scalar(coeffs.c_out)?;
+        let d_x = (x.broadcast_mul(&cskip)? + f.broadcast_mul(&cout)?)?;
+
+        if s_next > 1e-6 {
+            let direction = ((&x - &d_x)? * (1.0 / s_cur.max(1e-12)) as f64)?;
+            let dt = (s_next - s_cur) as f64;
+            x = (&x + (&direction * dt)?)?;
         } else {
-            0.0
-        };
-
-        let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
-        let pred_clean = if is_v_pred {
-            cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
-        } else {
-            cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
-        };
-
-        if next_amount > 1e-6 {
-            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?
-                .clamp(-3.0, 3.0)?;
-            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
-        } else {
-            x = pred_clean;
+            x = d_x;
         }
     }
 
     let mut images = Vec::new();
     for i in 0..count {
         let single = x.narrow(0, i as usize, 1)?;
-        images.push(tensor_to_rgba(&single, img_size, &normalizer)?);
+        images.push(tensor_to_rgba_centered(&single, img_size, &normalizer)?);
         println!("  sample {}/{count}", i + 1);
     }
 
