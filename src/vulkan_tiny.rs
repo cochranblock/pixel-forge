@@ -967,10 +967,13 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
 
     let normalizer = crate::normalize::Normalizer::load(
         std::path::Path::new(&format!("{}/normalize.json", cfg.data_dir))
-    )?;
-    if let Some(ref n) = normalizer {
-        println!("vulkan z-score: mean={:?} std={:?} (sidecar saved with each checkpoint)", n.mean, n.std);
-    }
+    )?
+    .ok_or_else(|| anyhow::anyhow!(
+        "{}/normalize.json missing — run `pixel-forge normalize-stats --data {}` first",
+        cfg.data_dir, cfg.data_dir
+    ))?;
+    println!("vulkan z-score: mean={:?} std={:?} (sidecar saved with each checkpoint)",
+        normalizer.mean, normalizer.std);
 
     let n = dataset.super_ids.len();
     let stride = dataset.stride;
@@ -1009,20 +1012,15 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
             let mut batch_super: Vec<u32> = Vec::with_capacity(bs as usize);
             let mut batch_tags: Vec<f32> = Vec::with_capacity(bs as usize * NUM_TAGS as usize);
 
+            let n_px = (cfg.img_size * cfg.img_size) as usize;
             for &idx in &indices[start..end] {
                 let src = idx * stride;
                 let mut clean = dataset.pixels[src..src + stride].to_vec();
-                if let Some(ref nrm) = normalizer {
-                    let n_px = (cfg.img_size * cfg.img_size) as usize;
-                    nrm.to_z_pixels(&mut clean, n_px);
-                }
+                normalizer.to_z_pixels(&mut clean, n_px);
                 batch_clean.extend_from_slice(&clean);
                 if let Some(ref cd) = cond_dataset {
                     let mut cnd = cd.pixels[src..src + stride].to_vec();
-                    if let Some(ref nrm) = normalizer {
-                        let n_px = (cfg.img_size * cfg.img_size) as usize;
-                        nrm.to_z_pixels(&mut cnd, n_px);
-                    }
+                    normalizer.to_z_pixels(&mut cnd, n_px);
                     batch_cond.extend_from_slice(&cnd);
                 }
                 batch_super.push(dataset.super_ids[idx]);
@@ -1084,9 +1082,7 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
 
         // Save every epoch — small file, lets us inspect conditioning behavior.
         save_candle_safetensors(&params, &cfg.output)?;
-        if let Some(ref nrm) = normalizer {
-            nrm.save_sidecar(std::path::Path::new(&cfg.output))?;
-        }
+        normalizer.save_sidecar(std::path::Path::new(&cfg.output))?;
     }
 
     println!("vulkan: done in {:.1}s, saved → {}", t0.elapsed().as_secs_f32(), cfg.output);

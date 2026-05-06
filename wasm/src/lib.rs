@@ -96,10 +96,9 @@ thread_local! {
     static NORMALIZER: RefCell<Option<normalize::Normalizer>> = const { RefCell::new(None) };
 }
 
-/// Install the per-channel z-score that travels with this checkpoint. JS
-/// fetches the `.normalize.json` sidecar (404 = no normalizer; do not
-/// call) and passes the raw bytes here. Subsequent `generate` calls apply
-/// the inverse transform before clamp + PNG encode.
+/// Install the per-channel z-score that travels with this checkpoint.
+/// JS fetches the `.normalize.json` sidecar and passes the raw bytes
+/// here. Required before `generate` — every model carries a sidecar.
 #[wasm_bindgen]
 pub fn set_normalizer(bytes: &[u8]) -> Result<(), JsValue> {
     let n = normalize::Normalizer::from_json_bytes(bytes)
@@ -163,9 +162,13 @@ pub async fn generate(class_name: &str, seed: u32, steps: u32) -> Result<Vec<u8>
     .await
     .map_err(|e| JsValue::from_str(&format!("sample: {e:#}")))?;
 
-    // Snapshot the optional normalizer for the lifetime of finalize_png.
-    let nrm = NORMALIZER.with(|c| c.borrow().clone());
-    let png = sampler::finalize_png(&dev, &result, img_size, nrm.as_ref())
+    // The normalizer is mandatory — JS calls set_normalizer between
+    // load_model and generate.
+    let nrm = NORMALIZER.with(|c| c.borrow().clone())
+        .ok_or_else(|| JsValue::from_str(
+            "normalizer not loaded — JS must call set_normalizer with the .normalize.json sidecar"
+        ))?;
+    let png = sampler::finalize_png(&dev, &result, img_size, &nrm)
         .await
         .map_err(|e| JsValue::from_str(&format!("png: {e:#}")))?;
 

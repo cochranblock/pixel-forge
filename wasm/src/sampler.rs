@@ -108,14 +108,13 @@ pub async fn sample(
 }
 
 /// Convert raw NCHW=[1,3,H,W] f32 GPU buffer to a PNG byte vec. Reads back
-/// asynchronously from the GPU. When `normalizer` is Some, the inverse
-/// z-score is applied on CPU before clamp + scale (matches the desktop
-/// `tensor_to_rgba_z` helper).
+/// asynchronously from the GPU, applies the inverse z-score on CPU, then
+/// clamps + scales to RGB bytes. Matches the desktop `tensor_to_rgba`.
 pub async fn finalize_png(
     dev: &GpuDevice,
     x: &GpuBuffer,
     img_size: u32,
-    normalizer: Option<&crate::normalize::Normalizer>,
+    normalizer: &crate::normalize::Normalizer,
 ) -> Result<Vec<u8>> {
     let mut raw = dev.read_async(x).await?;
     let n = (img_size * img_size) as usize;
@@ -126,9 +125,7 @@ pub async fn finalize_png(
         ));
     }
 
-    if let Some(nrm) = normalizer {
-        nrm.from_z_pixels(&mut raw, n);
-    }
+    normalizer.from_z_pixels(&mut raw, n);
 
     // NCHW=[1,3,H,W] → interleaved RGB bytes.
     let mut rgba = Vec::with_capacity(n * 4);
