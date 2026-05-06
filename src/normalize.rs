@@ -114,6 +114,31 @@ impl Normalizer {
         }
     }
 
+    /// Mean-only centering: subtract per-channel mean, leave std intact.
+    /// EDM preconditioning expects centered input — c_in handles the
+    /// σ-dependent rescale at every noise level, so dividing by std here
+    /// would just duplicate work and miscalibrate σ_data.
+    pub fn center_pixels(&self, px: &mut [f32], n_px: usize) {
+        for c in 0..3 {
+            let off = c * n_px;
+            let m = self.mean[c];
+            for k in 0..n_px {
+                px[off + k] -= m;
+            }
+        }
+    }
+
+    /// Inverse of `center_pixels` — add per-channel mean back, no clamp.
+    pub fn uncenter_pixels(&self, px: &mut [f32], n_px: usize) {
+        for c in 0..3 {
+            let off = c * n_px;
+            let m = self.mean[c];
+            for k in 0..n_px {
+                px[off + k] += m;
+            }
+        }
+    }
+
     fn from_json_value(v: &serde_json::Value) -> Result<Self> {
         // normalize-stats writes f64; coerce to f32 here so the in-memory
         // form matches what we apply on the GPU.

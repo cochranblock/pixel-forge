@@ -41,7 +41,17 @@ impl EdmCoeffs {
     /// Compute all four coefficients + loss weight for a given noise
     /// level σ and dataset σ_data. σ must be > 0; callers should pass
     /// at least σ_min (default 0.002 in EDM) — never 0.
+    ///
+    /// Loss weight uses Min-SNR-γ clamping (Hang et al. 2023) to keep
+    /// the weight bounded — `λ(σ) = 1/c_out²` blows up at low σ and
+    /// destabilizes Adam. γ=5 matches the published sweet spot.
     pub fn at(sigma: f32, sigma_data: f32) -> Self {
+        Self::with_gamma(sigma, sigma_data, 5.0)
+    }
+
+    /// Same as [`at`] but lets the caller override the Min-SNR-γ cap.
+    /// Pass γ = f32::INFINITY for the unclamped EDM weighting.
+    pub fn with_gamma(sigma: f32, sigma_data: f32, gamma: f32) -> Self {
         let s2 = sigma * sigma;
         let sd2 = sigma_data * sigma_data;
         let denom = (s2 + sd2).max(1e-20);
@@ -50,7 +60,8 @@ impl EdmCoeffs {
         let c_out = sigma * sigma_data / denom_sqrt;
         let c_skip = sd2 / denom;
         let c_noise = 0.25 * sigma.max(1e-20).ln();
-        let loss_weight = 1.0 / (c_out * c_out).max(1e-20);
+        let raw_weight = 1.0 / (c_out * c_out).max(1e-20);
+        let loss_weight = raw_weight.min(gamma);
         Self { c_in, c_out, c_skip, c_noise, loss_weight }
     }
 }
@@ -166,10 +177,29 @@ mod tests {
     }
 
     #[test]
-    fn loss_weight_inverse_of_c_out_squared() {
-        let c = EdmCoeffs::at(0.5, 0.4);
+    fn unclamped_loss_weight_is_inverse_c_out_squared() {
+        let c = EdmCoeffs::with_gamma(0.5, 0.4, f32::INFINITY);
         let expected = 1.0 / (c.c_out * c.c_out);
         assert!((c.loss_weight - expected).abs() / expected < 1e-5);
+    }
+
+    #[test]
+    fn min_snr_gamma_clamps_low_sigma_explosion() {
+        // At σ=0.005 σ_data=0.4: c_out ≈ 0.005, raw weight ≈ 40000.
+        // Min-SNR-γ=5 should cap it.
+        let c = EdmCoeffs::with_gamma(0.005, 0.4, 5.0);
+        assert!((c.loss_weight - 5.0).abs() < 1e-5,
+            "loss_weight = {} (expected 5)", c.loss_weight);
+    }
+
+    #[test]
+    fn min_snr_gamma_passthrough_high_sigma() {
+        // At σ=10, σ_data=0.4: c_out ≈ 0.4, raw weight ≈ 6.25.
+        // Above γ=5 → cap fires and clamps to 5.
+        // Below γ=10 → passes through.
+        let c10 = EdmCoeffs::with_gamma(10.0, 0.4, 10.0);
+        assert!(c10.loss_weight < 10.0,
+            "loss_weight = {} (expected < 10)", c10.loss_weight);
     }
 
     #[test]

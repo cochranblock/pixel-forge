@@ -1235,8 +1235,8 @@ pub fn skeleton_start(
     (skeleton * mix)? + (&noise * SKELETON_NOISE as f64)?
 }
 
-/// Inverse z-score → clamp → encode. Models always carry a normalizer
-/// sidecar; the trainer rejects datasets without normalize.json.
+/// Inverse z-score → clamp → encode. For models trained with the legacy
+/// z-score data prep (Quench/Anvil/Micro pre-EDM).
 fn tensor_to_rgba(
     x: &Tensor,
     img_size: u32,
@@ -1247,6 +1247,26 @@ fn tensor_to_rgba(
     let mean = Tensor::new(&normalizer.mean[..], device)?.reshape((1, 3, 1, 1))?;
     let std  = Tensor::new(&normalizer.std[..],  device)?.reshape((1, 3, 1, 1))?;
     let x = x.broadcast_mul(&std)?.broadcast_add(&mean)?;
+    encode_to_rgba(&x, img_size)
+}
+
+/// Uncenter (add mean) → clamp → encode. For EDM-trained models, where
+/// the data prep is mean-only (the σ-rescale is per-step inside the
+/// sampler, not a fixed dataset transform).
+fn tensor_to_rgba_centered(
+    x: &Tensor,
+    img_size: u32,
+    normalizer: &crate::normalize::Normalizer,
+) -> candle_core::Result<RgbaImage> {
+    let device = x.device();
+    let mean = Tensor::new(&normalizer.mean[..], device)?.reshape((1, 3, 1, 1))?;
+    let x = x.broadcast_add(&mean)?;
+    encode_to_rgba(&x, img_size)
+}
+
+/// Shared back-half: clamp [0,1] → u8 → RGBA pixels. The forward pre-step
+/// (z-score inverse vs mean-uncenter) is decided by the caller.
+fn encode_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
     let x = x.clamp(0.0, 1.0)?;
     let x = (x * 255.0)?.to_dtype(DType::U8)?;
     let x = x.squeeze(0)?.permute((1, 2, 0))?;
@@ -1316,13 +1336,12 @@ pub fn sample_seeded_cfg(
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = TinyUNet::new(vb)?;
-    let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
     let normalizer = crate::normalize::Normalizer::load_sidecar(std::path::Path::new(model_path))?
         .ok_or_else(|| anyhow::anyhow!("model {} is missing required normalize.json sidecar", model_path))?;
     let params = TinyUNet::param_count(&varmap);
-    let pred_tag = if is_v_pred { ", v-pred" } else { "" };
-    println!("model: {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}, z-score",
+    let sigma_data = normalizer.sigma_data();
+    println!("model: {} params, sampling {} images, EDM Euler {steps} steps, cfg={}, σ_data={sigma_data:.4}",
         params, count, cfg_scale);
 
     let n = count as usize;
@@ -1332,72 +1351,55 @@ pub fn sample_seeded_cfg(
         println!("  seed: {s}");
     }
 
-    // Skeleton seeding: blend 70% class mean + 30% noise as starting point.
-    // Gives the sampler a structural head start — reduces blob artifacts on
-    // structured classes (character, building, weapon, etc.).
-    // Falls back silently to pure noise if skeletons_v2.safetensors is absent.
-    let maybe_skel = load_skeleton_v2(&cond.name, img_size, &device);
-    if maybe_skel.is_some() {
-        println!("  skeleton: class={}", cond.name);
-    }
-
+    // EDM init: x = N(0,1) · σ_max. Skeleton init is incompatible with
+    // EDM's σ-parameterized noise space (skeleton hints assume linear
+    // noise blending), so we drop it for the EDM path.
     let class_id = cond.super_id;
     let init_tensors: Vec<Tensor> = (0..count)
-        .map(|i| {
-            if let Some(ref skel) = maybe_skel {
-                skeleton_start(skel, seed, class_id, i, img_size, &device)
-                    .and_then(|t| t.squeeze(0))
-            } else {
-                seeded_noise(seed, class_id, i, img_size, &device)
-                    .and_then(|t| t.squeeze(0))
-            }
-        })
+        .map(|i| seeded_noise(seed, class_id, i, img_size, &device)
+            .and_then(|t| t.squeeze(0)))
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?;
-    // Skeleton lives in [0,1]; if the model expects z-space, transform it
-    // forward so the noise blend in skeleton_start matches the training
-    // distribution. Pure-noise inits are already N(0,1), so no-op there.
-    if maybe_skel.is_some() {
-        let mean = Tensor::new(&normalizer.mean[..], &device)?.reshape((1, 3, 1, 1))?;
-        let std  = Tensor::new(&normalizer.std[..],  &device)?.reshape((1, 3, 1, 1))?;
-        x = x.broadcast_sub(&mean)?.broadcast_div(&std)?;
-    }
+    let sigmas = crate::precond::sampling_sigmas(steps);
+    x = (x * sigmas[0] as f64)?;
 
-    let max_noise: f32 = 1.0;
+    // Reusable broadcastable scalars.
+    let make_scalar = |v: f32| -> candle_core::Result<Tensor> {
+        Tensor::new(&[v], &device)?.reshape((1, 1, 1, 1))
+    };
 
-    for step in 0..steps {
-        // Cosine schedule matching training
-        let t_frac = 1.0 - (step as f32 / steps as f32);
-        let amount = cosine_schedule(t_frac) * max_noise;
-        let next_amount = if step + 1 < steps {
-            let next_frac = 1.0 - ((step + 1) as f32 / steps as f32);
-            cosine_schedule(next_frac) * max_noise
+    for i in 0..steps {
+        let s_cur  = sigmas[i];
+        let s_next = sigmas[i + 1];
+        let coeffs = crate::precond::EdmCoeffs::at(s_cur, sigma_data);
+
+        // EDM time conditioning is c_noise = 0.25·log(σ), broadcast to
+        // a (B,) tensor for the model.
+        let t_cnoise = Tensor::new(&vec![coeffs.c_noise; count as usize][..], &device)?;
+        let x_in = (&x * coeffs.c_in as f64)?;
+        let f = cfg_denoise(&model, &x_in, &t_cnoise,
+            &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?;
+        // D = c_skip · x + c_out · F
+        let cskip = make_scalar(coeffs.c_skip)?;
+        let cout  = make_scalar(coeffs.c_out)?;
+        let d_x = (x.broadcast_mul(&cskip)? + f.broadcast_mul(&cout)?)?;
+
+        if s_next > 1e-6 {
+            // Euler step along the probability-flow ODE.
+            // d = (x − D)/σ;   x_next = x + (σ_next − σ_cur)·d
+            let direction = ((&x - &d_x)? * (1.0 / s_cur.max(1e-12)) as f64)?;
+            let dt = (s_next - s_cur) as f64;
+            x = (&x + (&direction * dt)?)?;
         } else {
-            0.0
-        };
-
-        let t = Tensor::new(&vec![amount; count as usize][..], &device)?;
-        let pred_clean = if is_v_pred {
-            cfg_denoise_vpred(&model, &x, &t, amount, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
-        } else {
-            cfg_denoise(&model, &x, &t, &super_tensor, &tags_tensor, &null_super, &null_tags, cfg_scale)?
-        };
-
-        if next_amount > 1e-6 {
-            let noise = ((&x - (&pred_clean * (1.0 - amount as f64))?)? * (1.0 / amount.max(1e-6) as f64))?
-                .clamp(-3.0, 3.0)?;
-            x = ((&pred_clean * (1.0 - next_amount as f64))? + (&noise * next_amount as f64)?)?;
-        } else {
-            x = pred_clean;
+            x = d_x;
         }
     }
 
-    // Split batch back into individual sprites. tensor_to_rgba applies
-    // the inverse z-score and final clamp.
+    // EDM uses centered (mean-subtracted) data; uncenter on decode.
     let mut images = Vec::new();
     for i in 0..count {
-        let single = x.narrow(0, i as usize, 1)?; // (1, 3, H, W)
-        images.push(tensor_to_rgba(&single, img_size, &normalizer)?);
+        let single = x.narrow(0, i as usize, 1)?;
+        images.push(tensor_to_rgba_centered(&single, img_size, &normalizer)?);
         println!("  sample {}/{count}", i + 1);
     }
 

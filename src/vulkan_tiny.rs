@@ -593,61 +593,108 @@ fn scale_grads_in_place(grads: &mut [Vec<f32>], scale: f32) {
     }
 }
 
+/// EDM training step (Karras et al. 2022). Replaces the linear
+/// "clean·(1-t) + noise·t" corruption + raw clean-pred loss with the
+/// σ-dependent preconditioning + λ(σ)-weighted loss on the network's
+/// raw output F.
+///
+/// Per-sample: σ ~ log-normal(P_MEAN, P_STD), x_noisy = clean + σ·ε.
+/// Network sees c_in·x_noisy with c_noise as time conditioning.
+/// Target = (clean − c_skip·x_noisy) / c_out, weight = 1/c_out². The
+/// resulting MSE is in clean-image units across all noise levels.
+///
+/// `sigmas[b]` is the per-sample σ to corrupt with — caller draws from
+/// `precond::sigma_from_uniform`. `sigma_data` comes from the manifest.
 #[allow(clippy::too_many_arguments)]
 pub fn vulkan_tiny_train_step(
     dev: &GpuDevice,
     opt: &mut AdamW,
     params: &mut VulkanTinyParams,
-    batch_clean: &[f32],     // (B, 3, S, S)
-    batch_cond: Option<&[f32]>, // (B, 3, S, S) when in_channels==6
-    batch_noise: &[f32],     // (B, 3, S, S)
-    noise_amounts: &[f32],
+    batch_clean: &[f32],         // (B, 3, S, S) — already centered
+    batch_cond: Option<&[f32]>,  // (B, 3, S, S) when in_channels==6
+    batch_noise: &[f32],         // (B, 3, S, S) — N(0, 1) per element
+    sigmas: &[f32],              // (B,) — per-sample σ
+    sigma_data: f32,
     super_ids: &[u32],
-    tags: &[f32],            // (B, 12)
+    tags: &[f32],                // (B, 12)
     batch: u32,
     img_size: u32,
-    max_grad_norm: f32,      // 0.0 disables clipping; recommend 1.0 for z-space
+    max_grad_norm: f32,
 ) -> Result<StepOutcome> {
+    use crate::precond::EdmCoeffs;
+
     let mut tape = Tape::new(dev);
     let mut leaves = ParamLeaves { ids: Vec::new(), sizes: Vec::new() };
 
     let stride = (3 * img_size * img_size) as usize;
-    // Build noisy_x = clean*(1-t) + noise*t
-    let mut noisy = vec![0.0f32; batch as usize * stride];
+
+    // Per-sample EDM coefficients.
+    let coeffs: Vec<EdmCoeffs> = sigmas.iter()
+        .map(|&s| EdmCoeffs::at(s, sigma_data))
+        .collect();
+
+    // x_noisy = clean + σ·ε; model input = c_in · x_noisy.
+    // Target for the raw network output F: (clean − c_skip·x_noisy) / c_out.
+    let mut x_noisy_scaled = vec![0.0f32; batch as usize * stride];
+    let mut target_f       = vec![0.0f32; batch as usize * stride];
     for b in 0..batch as usize {
-        let t = noise_amounts[b];
+        let c = coeffs[b];
+        let s = sigmas[b];
         for i in 0..stride {
-            noisy[b * stride + i] = batch_clean[b * stride + i] * (1.0 - t)
-                + batch_noise[b * stride + i] * t;
+            let clean = batch_clean[b * stride + i];
+            let eps = batch_noise[b * stride + i];
+            let x_noisy = clean + s * eps;
+            x_noisy_scaled[b * stride + i] = c.c_in * x_noisy;
+            target_f[b * stride + i] = (clean - c.c_skip * x_noisy) / c.c_out;
         }
     }
 
-    // For 6ch: input = [cond, noisy] concatenated along channel axis.
-    // PackedDataset is channel-first per sample, so concat = cond then noisy in memory.
+    // For 6ch: input = [cond, c_in·x_noisy] along channel axis. The
+    // conditioning channels stay in the unscaled centered space — they
+    // carry coarse structure that doesn't need σ-rescaling.
     let input = if params.in_channels == 6 {
         let cond = batch_cond.expect("vulkan_tiny: 6ch model requires batch_cond");
         let mut full = Vec::with_capacity(batch as usize * 2 * stride);
         for b in 0..batch as usize {
             full.extend_from_slice(&cond[b * stride..(b + 1) * stride]);
-            full.extend_from_slice(&noisy[b * stride..(b + 1) * stride]);
+            full.extend_from_slice(&x_noisy_scaled[b * stride..(b + 1) * stride]);
         }
         full
     } else {
-        noisy
+        x_noisy_scaled
     };
 
+    // Time conditioning: feed c_noise = 0.25·log(σ) through the same
+    // sinusoidal embedding the model already expects.
+    let c_noise: Vec<f32> = coeffs.iter().map(|c| c.c_noise).collect();
+
     let x_id = tape.leaf(&input);
-    let t_sin = timestep_embedding(noise_amounts, TIME_DIM);
+    let t_sin = timestep_embedding(&c_noise, TIME_DIM);
     let t_id = tape.leaf(&t_sin);
     let one_hot = build_one_hot(super_ids, batch);
     let oh_id = tape.leaf(&one_hot);
     let tags_id = tape.leaf(tags);
-    // Target: clean image (clean-pred mode, matches default Cinder training)
-    let target_id = tape.leaf(batch_clean);
+    let target_id = tape.leaf(&target_f);
 
     let pred = tiny_forward(&mut tape, params, &mut leaves, x_id, t_id, oh_id, tags_id, batch, img_size)?;
 
-    let loss = tape.mse_loss(pred, target_id)?;
+    // Per-sample λ(σ) weight broadcast across pixels. Implementation:
+    // build a (B*stride,) weight tensor and use tape.scale-style ops? The
+    // tape API gives us mse_loss as a scalar mean — simplest path is to
+    // pre-scale the prediction and target equally per sample, since
+    //   λ · ||F − T||² = ||√λ·(F − T)||² = ||√λ·F − √λ·T||².
+    // That keeps the loss API unchanged.
+    let mut weighted_pred_target_factor = vec![0.0f32; batch as usize * stride];
+    for b in 0..batch as usize {
+        let sqrt_w = coeffs[b].loss_weight.sqrt();
+        for i in 0..stride {
+            weighted_pred_target_factor[b * stride + i] = sqrt_w;
+        }
+    }
+    let w_id = tape.leaf(&weighted_pred_target_factor);
+    let pred_w   = tape.mul(pred, w_id)?;
+    let target_w = tape.mul(target_id, w_id)?;
+    let loss = tape.mse_loss(pred_w, target_w)?;
     let loss_val = tape.read(loss)?[0];
     tape.backward(loss)?;
 
@@ -1012,22 +1059,25 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
             let mut batch_super: Vec<u32> = Vec::with_capacity(bs as usize);
             let mut batch_tags: Vec<f32> = Vec::with_capacity(bs as usize * NUM_TAGS as usize);
 
+            // EDM works on centered data (mean-subtracted, std intact).
+            // The σ-dependent c_in scaling is applied inside the train
+            // step, not up front.
             let n_px = (cfg.img_size * cfg.img_size) as usize;
             for &idx in &indices[start..end] {
                 let src = idx * stride;
                 let mut clean = dataset.pixels[src..src + stride].to_vec();
-                normalizer.to_z_pixels(&mut clean, n_px);
+                normalizer.center_pixels(&mut clean, n_px);
                 batch_clean.extend_from_slice(&clean);
                 if let Some(ref cd) = cond_dataset {
                     let mut cnd = cd.pixels[src..src + stride].to_vec();
-                    normalizer.to_z_pixels(&mut cnd, n_px);
+                    normalizer.center_pixels(&mut cnd, n_px);
                     batch_cond.extend_from_slice(&cnd);
                 }
                 batch_super.push(dataset.super_ids[idx]);
                 batch_tags.extend_from_slice(&dataset.tags[idx]);
             }
 
-            // Box-Muller noise
+            // Box-Muller noise — N(0, 1) per element.
             let batch_noise: Vec<f32> = (0..bs as usize * stride)
                 .map(|_| {
                     let u1: f32 = rng.r#gen::<f32>().max(1e-7);
@@ -1035,20 +1085,20 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
                     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
                 })
                 .collect();
-            // Cosine-scheduled noise levels
-            let noise_amounts: Vec<f32> = (0..bs)
-                .map(|_| {
-                    let t: f32 = rng.gen_range(0.0f32..1.0);
-                    crate::train::cosine_schedule(t)
-                })
+            // Per-sample σ from the EDM training distribution
+            // (log-normal with P_MEAN=-1.2, P_STD=1.2).
+            let sigmas: Vec<f32> = (0..bs)
+                .map(|_| crate::precond::sigma_from_uniform(rng.r#gen::<f32>()))
                 .collect();
+            let sigma_data = normalizer.sigma_data();
 
             let cond_slice = if cond_dataset.is_some() { Some(batch_cond.as_slice()) } else { None };
             let step_t0 = std::time::Instant::now();
             let outcome = vulkan_tiny_train_step(
                 &dev, &mut opt, &mut params,
                 &batch_clean, cond_slice, &batch_noise,
-                &noise_amounts, &batch_super, &batch_tags,
+                &sigmas, sigma_data,
+                &batch_super, &batch_tags,
                 bs, cfg.img_size, cfg.max_grad_norm,
             )?;
             let step_dt = step_t0.elapsed().as_secs_f32();
