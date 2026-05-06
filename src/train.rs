@@ -538,7 +538,12 @@ fn corrupt(x: &Tensor, amount: &Tensor, device: &Device) -> candle_core::Result<
 /// Save model weights with optional v_pred marker tensor.
 /// When v_prediction is true, a "v_pred_marker" tensor (single f32 = 1.0) is
 /// embedded in the safetensors file so sampling auto-detects the prediction mode.
-fn save_with_marker(varmap: &VarMap, path: &str, v_prediction: bool) -> Result<()> {
+fn save_with_marker(
+    varmap: &VarMap,
+    path: &str,
+    v_prediction: bool,
+    normalizer: Option<&crate::normalize::Normalizer>,
+) -> Result<()> {
     if !v_prediction {
         varmap.save(path)?;
     } else {
@@ -554,6 +559,9 @@ fn save_with_marker(varmap: &VarMap, path: &str, v_prediction: bool) -> Result<(
         candle_core::safetensors::save(&tensors, path)?;
     }
     crate::nanosign::sign_and_log(path)?;
+    if let Some(n) = normalizer {
+        n.save_sidecar(std::path::Path::new(path))?;
+    }
     Ok(())
 }
 
@@ -626,6 +634,18 @@ fn train_inner(
     let prec = if config.mixed_precision { " | fp16" } else { "" };
     println!("schedule: {sched} | {cfg_info} | ema={} | min_snr={} | {pred_mode}{prec}", config.ema, config.min_snr_gamma);
 
+    // Optional z-score: present when `{data_dir}/normalize.json` exists
+    // (produced by `pixel-forge normalize-stats`). Applied per-batch after
+    // augmentations so the brightness clamp at [0,1] still makes sense.
+    let normalizer = crate::normalize::Normalizer::load(
+        std::path::Path::new(&format!("{}/normalize.json", config.data_dir))
+    )?;
+    if let Some(ref n) = normalizer {
+        println!("z-score: mean={:?} std={:?} (sidecar will be saved with checkpoints)", n.mean, n.std);
+    } else {
+        println!("z-score: disabled (no normalize.json in {})", config.data_dir);
+    }
+
     let t0 = std::time::Instant::now();
     let sz = config.img_size as usize;
     let mut loss_history: Vec<f64> = Vec::with_capacity(config.epochs);
@@ -691,6 +711,14 @@ fn train_inner(
                     }
                 }
 
+                // Apply z-score AFTER augmentations (which assume [0,1]) so
+                // the noise schedule sees ~N(0,1) data. corrupt() adds N(0,1)
+                // noise; magnitudes only match in z-space.
+                if let Some(ref nrm) = normalizer {
+                    let n_px = (config.img_size * config.img_size) as usize;
+                    nrm.to_z_pixels(&mut sample, n_px);
+                }
+
                 batch_px.extend_from_slice(&sample);
 
                 // CFG: randomly drop conditioning to train unconditional path
@@ -726,12 +754,19 @@ fn train_inner(
 
             let (noisy_x, noise) = corrupt(&x_batch, &noise_amount, device)?;
 
-            // For conditioned training, concat conditioning channels to input
+            // For conditioned training, concat conditioning channels to input.
+            // Z-score the cond channels with the same stats so all model
+            // inputs live in one space.
             let model_input = if let Some(cond) = cond_dataset {
                 let mut cond_px = Vec::with_capacity(bs * stride);
                 for &idx in &indices[start..end] {
                     let src_start = idx * stride;
-                    cond_px.extend_from_slice(&cond.pixels[src_start..src_start + stride]);
+                    let mut sample = cond.pixels[src_start..src_start + stride].to_vec();
+                    if let Some(ref nrm) = normalizer {
+                        let n_px = (config.img_size * config.img_size) as usize;
+                        nrm.to_z_pixels(&mut sample, n_px);
+                    }
+                    cond_px.extend_from_slice(&sample);
                 }
                 let cond_batch = Tensor::new(cond_px.as_slice(), device)?
                     .reshape((bs, 3, sz, sz))?;
@@ -815,11 +850,11 @@ fn train_inner(
             };
             if let Some(ref ema) = ema {
                 let originals = ema.swap_in(varmap);
-                save_with_marker(varmap, &cp, config.v_prediction)?;
+                save_with_marker(varmap, &cp, config.v_prediction, normalizer.as_ref())?;
                 println!("  checkpoint (ema): {cp}");
                 EmaWeights::swap_out(&originals, varmap);
             } else {
-                save_with_marker(varmap, &cp, config.v_prediction)?;
+                save_with_marker(varmap, &cp, config.v_prediction, normalizer.as_ref())?;
                 println!("  checkpoint: {cp}");
             }
         }
@@ -832,7 +867,7 @@ fn train_inner(
     } else {
         println!("saving model to {}...", config.output);
     }
-    save_with_marker(varmap, &config.output, config.v_prediction)?;
+    save_with_marker(varmap, &config.output, config.v_prediction, normalizer.as_ref())?;
 
     let file_size = std::fs::metadata(&config.output)?.len();
     let final_loss = loss_history.last().copied().unwrap_or(0.0);
@@ -1208,6 +1243,25 @@ pub fn skeleton_start(
 
 /// Convert prediction tensor to RGBA image.
 fn tensor_to_rgba(x: &Tensor, img_size: u32) -> candle_core::Result<RgbaImage> {
+    tensor_to_rgba_z(x, img_size, None)
+}
+
+/// Same as `tensor_to_rgba` but applies the inverse z-score before clamping
+/// when the model was trained with a normalizer sidecar.
+fn tensor_to_rgba_z(
+    x: &Tensor,
+    img_size: u32,
+    normalizer: Option<&crate::normalize::Normalizer>,
+) -> candle_core::Result<RgbaImage> {
+    let x = if let Some(n) = normalizer {
+        let device = x.device();
+        // (1, 3, H, W) — broadcast across H,W with shape (1,3,1,1)
+        let mean = Tensor::new(&n.mean[..], device)?.reshape((1, 3, 1, 1))?;
+        let std  = Tensor::new(&n.std[..],  device)?.reshape((1, 3, 1, 1))?;
+        x.broadcast_mul(&std)?.broadcast_add(&mean)?
+    } else {
+        x.clone()
+    };
     let x = x.clamp(0.0, 1.0)?;
     let x = (x * 255.0)?.to_dtype(DType::U8)?;
     let x = x.squeeze(0)?.permute((1, 2, 0))?;
@@ -1279,9 +1333,12 @@ pub fn sample_seeded_cfg(
     let model = TinyUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
+    let normalizer = crate::normalize::Normalizer::load_sidecar(std::path::Path::new(model_path))?;
     let params = TinyUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
-    println!("model: {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);
+    let z_tag = if normalizer.is_some() { ", z-score" } else { "" };
+    println!("model: {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}{z_tag}",
+        params, count, cfg_scale);
 
     let n = count as usize;
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
@@ -1312,6 +1369,14 @@ pub fn sample_seeded_cfg(
         })
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?;
+    // Skeleton lives in [0,1]; if the model expects z-space, transform it
+    // forward so the noise blend in skeleton_start matches the training
+    // distribution. Pure-noise inits are already N(0,1), so no-op there.
+    if let (Some(nrm), Some(_)) = (&normalizer, &maybe_skel) {
+        let mean = Tensor::new(&nrm.mean[..], &device)?.reshape((1, 3, 1, 1))?;
+        let std  = Tensor::new(&nrm.std[..],  &device)?.reshape((1, 3, 1, 1))?;
+        x = x.broadcast_sub(&mean)?.broadcast_div(&std)?;
+    }
 
     let max_noise: f32 = 1.0;
 
@@ -1342,12 +1407,12 @@ pub fn sample_seeded_cfg(
         }
     }
 
-    // Split batch back into individual sprites
-    let x = x.clamp(0.0, 1.0)?;
+    // Split batch back into individual sprites. tensor_to_rgba_z handles
+    // the inverse z-score (no-op when normalizer is None) and final clamp.
     let mut images = Vec::new();
     for i in 0..count {
         let single = x.narrow(0, i as usize, 1)?; // (1, 3, H, W)
-        images.push(tensor_to_rgba(&single, img_size)?);
+        images.push(tensor_to_rgba_z(&single, img_size, normalizer.as_ref())?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -1397,9 +1462,12 @@ pub fn sample_medium_seeded_cfg(
     let model = MediumUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
+    let normalizer = crate::normalize::Normalizer::load_sidecar(std::path::Path::new(model_path))?;
     let params = MediumUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
-    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}", params, count, cfg_scale);
+    let z_tag = if normalizer.is_some() { ", z-score" } else { "" };
+    println!("model: Quench, {} params, sampling {} images, {steps} steps, cfg={}{pred_tag}{z_tag}",
+        params, count, cfg_scale);
 
     let n = count as usize;
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, n, &device)?;
@@ -1427,6 +1495,11 @@ pub fn sample_medium_seeded_cfg(
         })
         .collect::<candle_core::Result<Vec<_>>>()?;
     let mut x = Tensor::stack(&init_tensors, 0)?;
+    if let (Some(nrm), Some(_)) = (&normalizer, &maybe_skel) {
+        let mean = Tensor::new(&nrm.mean[..], &device)?.reshape((1, 3, 1, 1))?;
+        let std  = Tensor::new(&nrm.std[..],  &device)?.reshape((1, 3, 1, 1))?;
+        x = x.broadcast_sub(&mean)?.broadcast_div(&std)?;
+    }
 
     let max_noise: f32 = 1.0;
 
@@ -1456,12 +1529,10 @@ pub fn sample_medium_seeded_cfg(
         }
     }
 
-    // Split batch back into individual sprites
-    let x = x.clamp(0.0, 1.0)?;
     let mut images = Vec::new();
     for i in 0..count {
-        let single = x.narrow(0, i as usize, 1)?; // (1, 3, H, W)
-        images.push(tensor_to_rgba(&single, img_size)?);
+        let single = x.narrow(0, i as usize, 1)?;
+        images.push(tensor_to_rgba_z(&single, img_size, normalizer.as_ref())?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -1488,10 +1559,12 @@ pub fn sample_anvil(
     let model = AnvilUNet::new(vb)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
+    let normalizer = crate::normalize::Normalizer::load_sidecar(std::path::Path::new(model_path))?;
 
     let params = AnvilUNet::param_count(&varmap);
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
-    println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={cfg_scale}{pred_tag}", params, count);
+    let z_tag = if normalizer.is_some() { ", z-score" } else { "" };
+    println!("model: Anvil, {} params, sampling {} images, {steps} steps, cfg={cfg_scale}{pred_tag}{z_tag}", params, count);
 
     let (super_tensor, tags_tensor, null_super, null_tags) = cond_tensors(cond, 1, &device)?;
 
@@ -1521,7 +1594,7 @@ pub fn sample_anvil(
             }
         }
 
-        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
+        images.push(tensor_to_rgba_z(&x, img_size, normalizer.as_ref())?);
         println!("  sample {}/{count}", i + 1);
     }
 
@@ -1546,11 +1619,13 @@ pub fn sample_micro(
     let model = MicroUNet::with_channels(vb, channels)?;
     let is_v_pred = detect_v_pred(model_path);
     crate::quantize::load_varmap(&mut varmap, model_path)?;
+    let normalizer = crate::normalize::Normalizer::load_sidecar(std::path::Path::new(model_path))?;
 
     let params = MicroUNet::param_count(&varmap);
     let ch_str = channels.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",");
     let pred_tag = if is_v_pred { ", v-pred" } else { "" };
-    println!("model: Micro [{ch_str}], {} params, sampling {} images, {steps} steps{pred_tag}", params, count);
+    let z_tag = if normalizer.is_some() { ", z-score" } else { "" };
+    println!("model: Micro [{ch_str}], {} params, sampling {} images, {steps} steps{pred_tag}{z_tag}", params, count);
 
     let mut images = Vec::new();
     for i in 0..count {
@@ -1581,7 +1656,7 @@ pub fn sample_micro(
             }
         }
 
-        images.push(tensor_to_rgba(&x.clamp(0.0, 1.0)?, img_size)?);
+        images.push(tensor_to_rgba_z(&x, img_size, normalizer.as_ref())?);
         println!("  sample {}/{count}", i + 1);
     }
 
