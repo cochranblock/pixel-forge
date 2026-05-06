@@ -629,7 +629,6 @@ fn train_inner(
         None
     };
 
-    let sched = if config.cosine_schedule { "cosine" } else { "linear" };
     let cfg_info = if config.cfg_dropout > 0.0 {
         format!("cfg_drop={}", config.cfg_dropout)
     } else {
@@ -638,12 +637,12 @@ fn train_inner(
 
     println!("training: {} epochs, bs={}, lr={}, {} samples", config.epochs, config.batch_size, config.lr, n);
     println!("augmentation: palette swap + h-flip (50%) + rotation (0/90/180/270) + brightness (50%)");
-    let pred_mode = if config.v_prediction { "v-pred" } else { "clean-pred" };
     let prec = if config.mixed_precision { " | fp16" } else { "" };
-    println!("schedule: {sched} | {cfg_info} | ema={} | min_snr={} | {pred_mode}{prec}", config.ema, config.min_snr_gamma);
+    println!("recipe: EDM (log-normal σ + σ-precond + Min-SNR-γ=5) | {cfg_info} | ema={}{prec}",
+        config.ema);
 
-    // Z-score is mandatory. Run `pixel-forge normalize-stats --data <dir>`
-    // before training to produce {data_dir}/normalize.json.
+    // EDM still requires the normalize manifest — uses mean for centering
+    // and sigma_data as the preconditioning constant.
     let normalizer = crate::normalize::Normalizer::load(
         std::path::Path::new(&format!("{}/normalize.json", config.data_dir))
     )?
@@ -651,8 +650,8 @@ fn train_inner(
         "{}/normalize.json missing — run `pixel-forge normalize-stats --data {}` first",
         config.data_dir, config.data_dir
     ))?;
-    println!("z-score: mean={:?} std={:?} (sidecar saved with checkpoints)",
-        normalizer.mean, normalizer.std);
+    println!("center: mean={:?} σ_data={:.4} (sidecar saved with checkpoints)",
+        normalizer.mean, normalizer.sigma_data());
 
     let t0 = std::time::Instant::now();
     let sz = config.img_size as usize;
