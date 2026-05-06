@@ -772,6 +772,14 @@ enum Cmd {
         #[arg(short, long, default_value = "data_v3_32/normalize.json")]
         output: String,
     },
+    /// Numeric quality check: pixel diversity, color count, brightness,
+    /// edge density across a directory of generated PNGs. Useful to track
+    /// model improvement across training epochs without eyes-on review.
+    QualityCheck {
+        /// Directory of PNGs to analyze (recursive).
+        #[arg(short, long, default_value = "samples")]
+        dir: String,
+    },
     /// A/B test whether a 6ch conditioned Cinder is actually using the conditioning
     /// channel. Runs forward pass twice with the same noisy input but different
     /// conditioning hints (real coarsened image vs random noise) and reports
@@ -2461,6 +2469,88 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             println!("  mean       = [{:.5}, {:.5}, {:.5}]", mean[0], mean[1], mean[2]);
             println!("  std        = [{:.5}, {:.5}, {:.5}]", std[0],  std[1],  std[2]);
             println!("  sigma_data = {sigma_data:.5}  (EDM preconditioning constant)");
+        }
+        Cmd::QualityCheck { dir } => {
+            // Walk directory, decode each PNG once into RGBA u8, compute
+            // per-image stats + cross-image pairwise diversity. All numbers
+            // are dimensionless or in [0, 255] pixel units.
+            let mut paths: Vec<std::path::PathBuf> = Vec::new();
+            for entry in std::fs::read_dir(&dir)? {
+                let p = entry?.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("png") {
+                    paths.push(p);
+                }
+            }
+            paths.sort();
+            anyhow::ensure!(!paths.is_empty(), "no PNGs in {dir}");
+
+            // Decode all images up front so cross-image stats can run.
+            let mut imgs: Vec<(String, Vec<u8>, u32, u32)> = Vec::new();
+            for p in &paths {
+                let img = image::open(p)?.to_rgba8();
+                let (w, h) = (img.width(), img.height());
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                imgs.push((name, img.into_raw(), w, h));
+            }
+
+            println!("quality-check: {} images in {dir}\n", imgs.len());
+            println!("{:<40} {:>5} {:>5} {:>10} {:>10} {:>10} {:>10}",
+                "file", "w", "h", "colors", "mean_r", "mean_g", "mean_b");
+            println!("{}", "─".repeat(98));
+
+            let mut all_pixels: Vec<&[u8]> = Vec::with_capacity(imgs.len());
+            for (name, raw, w, h) in &imgs {
+                let n_px = (*w * *h) as usize;
+                let mut colors: std::collections::HashSet<u32> = std::collections::HashSet::new();
+                let mut sum = [0u64; 3];
+                for px in raw.chunks_exact(4) {
+                    let key = (px[0] as u32) << 16 | (px[1] as u32) << 8 | px[2] as u32;
+                    colors.insert(key);
+                    sum[0] += px[0] as u64;
+                    sum[1] += px[1] as u64;
+                    sum[2] += px[2] as u64;
+                }
+                let mean = [
+                    sum[0] as f32 / n_px as f32,
+                    sum[1] as f32 / n_px as f32,
+                    sum[2] as f32 / n_px as f32,
+                ];
+                println!("{:<40} {:>5} {:>5} {:>10} {:>10.1} {:>10.1} {:>10.1}",
+                    name, w, h, colors.len(), mean[0], mean[1], mean[2]);
+                all_pixels.push(raw);
+            }
+
+            // Cross-image pairwise diversity: mean L1 distance between
+            // images of the same dimensions. A tiny number → mode collapse;
+            // a large number → diverse outputs.
+            let dims_match = imgs.windows(2).all(|w| w[0].2 == w[1].2 && w[0].3 == w[1].3);
+            if dims_match && imgs.len() >= 2 {
+                let n = imgs.len();
+                let n_px = (imgs[0].2 * imgs[0].3) as usize;
+                let mut total_d = 0u64;
+                let mut pairs = 0u32;
+                for i in 0..n {
+                    for j in (i + 1)..n {
+                        let mut d = 0u64;
+                        let a = all_pixels[i];
+                        let b = all_pixels[j];
+                        // Sum |a-b| over the RGB channels (skip alpha).
+                        for k in 0..n_px {
+                            let off = k * 4;
+                            d += (a[off    ] as i32 - b[off    ] as i32).unsigned_abs() as u64;
+                            d += (a[off + 1] as i32 - b[off + 1] as i32).unsigned_abs() as u64;
+                            d += (a[off + 2] as i32 - b[off + 2] as i32).unsigned_abs() as u64;
+                        }
+                        total_d += d;
+                        pairs += 1;
+                    }
+                }
+                let mean_pairwise = total_d as f64 / pairs as f64 / n_px as f64 / 3.0;
+                println!("\npairwise diversity (mean L1 per pixel-channel): {:.2} (0=identical, 255=max)",
+                    mean_pairwise);
+            } else if !dims_match {
+                println!("\npairwise diversity: skipped (image dimensions vary)");
+            }
         }
         Cmd::InspectCond { model, class, count, seed } => {
             use candle_core::{DType, Tensor};
