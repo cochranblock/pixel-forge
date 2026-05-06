@@ -43,6 +43,7 @@ pub mod sponge;
 pub mod tiered_pipeline;
 pub mod palette_net;
 pub mod normalize;
+pub mod precond;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_backend;
 #[cfg(feature = "vulkan")]

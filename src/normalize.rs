@@ -26,6 +26,13 @@ pub struct Normalizer {
     pub pixel_count: u64,
     pub mean: [f32; 3],
     pub std: [f32; 3],
+    /// Scalar standard deviation of the *centered* dataset across all
+    /// channels and pixels — what EDM calls σ_data. Defaults to RMS of
+    /// per-channel std when absent (same value old sidecars would imply).
+    /// Used to derive the EDM preconditioning coefficients c_in/c_out/
+    /// c_skip — the σ-dependent generalization of plain z-scoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigma_data: Option<f32>,
 }
 
 impl Normalizer {
@@ -69,6 +76,17 @@ impl Normalizer {
         std::fs::write(&path, bytes)
             .with_context(|| format!("write {}", path.display()))?;
         Ok(())
+    }
+
+    /// EDM σ_data: the scalar std the preconditioning is calibrated for.
+    /// When absent from the sidecar (older manifests) we synthesize it
+    /// from the per-channel stds so EDM math still works on legacy files.
+    /// Identity is RMS — sqrt(mean(σ_c²)).
+    pub fn sigma_data(&self) -> f32 {
+        self.sigma_data.unwrap_or_else(|| {
+            let s2 = (self.std[0].powi(2) + self.std[1].powi(2) + self.std[2].powi(2)) / 3.0;
+            s2.sqrt()
+        })
     }
 
     /// In-place [0,1] → z-space on channel-first f32 pixels, layout
@@ -117,6 +135,7 @@ impl Normalizer {
             pixel_count:  v["pixel_count"].as_u64().unwrap_or(0),
             mean: [f(&mean_arr[0])?, f(&mean_arr[1])?, f(&mean_arr[2])?],
             std:  [f(&std_arr[0])?,  f(&std_arr[1])?,  f(&std_arr[2])?],
+            sigma_data: v.get("sigma_data").and_then(|s| s.as_f64()).map(|x| x as f32),
         })
     }
 }
@@ -131,6 +150,7 @@ mod tests {
             sample_count: 100, pixel_count: 100 * 1024,
             mean: [0.4, 0.3, 0.35],
             std:  [0.4, 0.4, 0.4],
+            sigma_data: Some(0.4),
         }
     }
 
@@ -167,5 +187,28 @@ mod tests {
             Normalizer::sidecar_path(p),
             PathBuf::from("/tmp/cinder.safetensors.normalize.json"),
         );
+    }
+
+    #[test]
+    fn sigma_data_explicit_takes_precedence() {
+        let mut n = fixture();
+        n.sigma_data = Some(0.123);
+        assert!((n.sigma_data() - 0.123).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sigma_data_falls_back_to_rms() {
+        let mut n = fixture();
+        n.sigma_data = None;
+        // RMS of [0.4, 0.4, 0.4] is 0.4.
+        assert!((n.sigma_data() - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn legacy_manifest_without_sigma_data_loads() {
+        let json = br#"{"version":1,"channels":3,"img_size":32,"sample_count":100,"pixel_count":102400,"mean":[0.4,0.3,0.35],"std":[0.4,0.4,0.4]}"#;
+        let n = Normalizer::from_json_bytes(json).unwrap();
+        assert!(n.sigma_data.is_none());
+        assert!((n.sigma_data() - 0.4).abs() < 1e-6); // RMS fallback works
     }
 }

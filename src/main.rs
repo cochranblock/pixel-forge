@@ -2440,6 +2440,9 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 (sumsq[2] / total - mean[2] * mean[2]).max(0.0),
             ];
             let std = [var[0].sqrt(), var[1].sqrt(), var[2].sqrt()];
+            // EDM σ_data: scalar std of the centered dataset, RMS across
+            // channels. The preconditioning coefficients calibrate around it.
+            let sigma_data = ((var[0] + var[1] + var[2]) / 3.0).sqrt() as f32;
 
             let manifest = serde_json::json!({
                 "version": 1,
@@ -2449,13 +2452,15 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 "pixel_count": total as u64,
                 "mean": mean,
                 "std":  std,
-                "note": "input space [0,1]; apply (x - mean)/std to enter z-space, invert with x*std + mean before clamp/encode",
+                "sigma_data": sigma_data,
+                "note": "input space [0,1]; apply (x - mean)/std to enter z-space, invert with x*std + mean before clamp/encode. sigma_data is the EDM preconditioning constant (RMS of per-channel std)",
             });
             std::fs::write(&output, serde_json::to_vec_pretty(&manifest)?)?;
 
             println!("normalize-stats: {n} samples × {n_px} px → {output}");
-            println!("  mean = [{:.5}, {:.5}, {:.5}]", mean[0], mean[1], mean[2]);
-            println!("  std  = [{:.5}, {:.5}, {:.5}]", std[0],  std[1],  std[2]);
+            println!("  mean       = [{:.5}, {:.5}, {:.5}]", mean[0], mean[1], mean[2]);
+            println!("  std        = [{:.5}, {:.5}, {:.5}]", std[0],  std[1],  std[2]);
+            println!("  sigma_data = {sigma_data:.5}  (EDM preconditioning constant)");
         }
         Cmd::InspectCond { model, class, count, seed } => {
             use candle_core::{DType, Tensor};
