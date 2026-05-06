@@ -42,6 +42,7 @@ pub mod nanosign;
 pub mod sponge;
 pub mod tiered_pipeline;
 pub mod palette_net;
+pub mod normalize;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_backend;
 #[cfg(feature = "vulkan")]
