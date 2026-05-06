@@ -23,6 +23,7 @@ mod timestep;
 mod weights;
 mod tiny_unet;
 mod sampler;
+mod normalize;
 
 use std::cell::RefCell;
 
@@ -92,6 +93,23 @@ pub async fn boot() -> Result<String, JsValue> {
 thread_local! {
     static DEVICE: RefCell<Option<any_gpu::GpuDevice>> = const { RefCell::new(None) };
     static MODEL: RefCell<Option<weights::CinderW>> = const { RefCell::new(None) };
+    static NORMALIZER: RefCell<Option<normalize::Normalizer>> = const { RefCell::new(None) };
+}
+
+/// Install the per-channel z-score that travels with this checkpoint. JS
+/// fetches the `.normalize.json` sidecar (404 = no normalizer; do not
+/// call) and passes the raw bytes here. Subsequent `generate` calls apply
+/// the inverse transform before clamp + PNG encode.
+#[wasm_bindgen]
+pub fn set_normalizer(bytes: &[u8]) -> Result<(), JsValue> {
+    let n = normalize::Normalizer::from_json_bytes(bytes)
+        .map_err(|e| JsValue::from_str(&format!("normalize manifest: {e:#}")))?;
+    log::log(&format!(
+        "pixel-forge-wasm: z-score loaded, mean={:?} std={:?}",
+        n.mean, n.std
+    ));
+    NORMALIZER.with(|c| *c.borrow_mut() = Some(n));
+    Ok(())
 }
 
 /// Upload the Cinder model. JS fetches the safetensors blob (PNG-style:
@@ -145,7 +163,9 @@ pub async fn generate(class_name: &str, seed: u32, steps: u32) -> Result<Vec<u8>
     .await
     .map_err(|e| JsValue::from_str(&format!("sample: {e:#}")))?;
 
-    let png = sampler::finalize_png(&dev, &result, img_size)
+    // Snapshot the optional normalizer for the lifetime of finalize_png.
+    let nrm = NORMALIZER.with(|c| c.borrow().clone());
+    let png = sampler::finalize_png(&dev, &result, img_size, nrm.as_ref())
         .await
         .map_err(|e| JsValue::from_str(&format!("png: {e:#}")))?;
 

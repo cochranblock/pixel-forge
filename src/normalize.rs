@@ -38,9 +38,15 @@ impl Normalizer {
         }
         let bytes = std::fs::read(path)
             .with_context(|| format!("read {}", path.display()))?;
-        let raw: serde_json::Value = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parse {}", path.display()))?;
-        Ok(Some(Self::from_json_value(&raw)?))
+        Self::from_json_bytes(&bytes).map(Some)
+    }
+
+    /// Parse a manifest from raw JSON bytes — used by the wasm runtime,
+    /// which fetches the sidecar over HTTP rather than from the filesystem.
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
+        let raw: serde_json::Value = serde_json::from_slice(bytes)
+            .context("parse normalize manifest")?;
+        Self::from_json_value(&raw)
     }
 
     /// Sidecar path: `{model_path}.normalize.json`. Stays adjacent to the

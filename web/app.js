@@ -285,6 +285,14 @@ async function initBeta() {
       loadText.textContent = 'Uploading weights…';
       const param_count = mod.load_model(bytes);
 
+      // Optional sidecar: when the model was trained with z-score
+      // normalization, the manifest sits next to the safetensors.
+      // 404 = no normalizer; just stay on the legacy [0,1] path.
+      const nrmResp = await fetch('./models/cinder.safetensors.normalize.json');
+      if (nrmResp.ok) {
+        mod.set_normalizer(new Uint8Array(await nrmResp.arrayBuffer()));
+      }
+
       runtime = mod;
       loading.hidden = true;
       controls.hidden = false;
