@@ -542,6 +542,57 @@ fn splat_updated(params: &mut VulkanTinyParams, updated: &[Vec<f32>], leaves: &P
 
 // ─── Train step ──────────────────────────────────────────────────────────────
 
+/// Outcome of a single training step. Surfaced so the trainer can track
+/// how often clipping fires and how often a step had to be skipped — both
+/// signals that LR is too aggressive for the data distribution.
+#[derive(Debug, Clone, Copy)]
+pub enum StepOutcome {
+    /// Optimizer step applied. `grad_norm` is the pre-clip global L2.
+    /// `clipped` is true when `grad_norm > max_grad_norm`.
+    Updated { loss: f32, grad_norm: f32, clipped: bool },
+    /// Step was skipped because gradients contained NaN or Inf. Optimizer
+    /// state is preserved — letting Adam absorb non-finite values
+    /// permanently corrupts the moment estimates.
+    Skipped { loss: f32, reason: &'static str },
+}
+
+impl StepOutcome {
+    /// The loss value for the batch — used for epoch averaging regardless
+    /// of whether the step actually applied.
+    pub fn loss(&self) -> f32 {
+        match self {
+            StepOutcome::Updated { loss, .. } | StepOutcome::Skipped { loss, .. } => *loss,
+        }
+    }
+}
+
+/// Global L2 norm across every parameter gradient. Returns None when any
+/// element is non-finite — the caller should skip the step in that case
+/// rather than letting NaN/Inf propagate into the optimizer's state.
+fn global_grad_norm(grads: &[Vec<f32>]) -> Option<f32> {
+    let mut sumsq = 0f64;
+    for g in grads {
+        for &v in g {
+            if !v.is_finite() {
+                return None;
+            }
+            sumsq += (v as f64) * (v as f64);
+        }
+    }
+    Some(sumsq.sqrt() as f32)
+}
+
+/// Scale every gradient element by `scale` in-place. Used to enforce the
+/// global-norm clip; cheaper than re-uploading + scaling on the GPU since
+/// grads are already on CPU here.
+fn scale_grads_in_place(grads: &mut [Vec<f32>], scale: f32) {
+    for g in grads {
+        for v in g.iter_mut() {
+            *v *= scale;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn vulkan_tiny_train_step(
     dev: &GpuDevice,
@@ -555,7 +606,8 @@ pub fn vulkan_tiny_train_step(
     tags: &[f32],            // (B, 12)
     batch: u32,
     img_size: u32,
-) -> Result<f32> {
+    max_grad_norm: f32,      // 0.0 disables clipping; recommend 1.0 for z-space
+) -> Result<StepOutcome> {
     let mut tape = Tape::new(dev);
     let mut leaves = ParamLeaves { ids: Vec::new(), sizes: Vec::new() };
 
@@ -602,11 +654,28 @@ pub fn vulkan_tiny_train_step(
     let param_vecs: Vec<Vec<f32>> = leaves.ids.iter()
         .map(|id| tape.read(*id))
         .collect::<Result<Vec<_>>>()?;
-    let grad_vecs: Vec<Vec<f32>> = leaves.ids.iter().enumerate()
+    let mut grad_vecs: Vec<Vec<f32>> = leaves.ids.iter().enumerate()
         .map(|(i, id)| {
             tape.read_grad(*id).map(|opt| opt.unwrap_or_else(|| vec![0.0f32; leaves.sizes[i]]))
         })
         .collect::<Result<Vec<_>>>()?;
+
+    // Gradient hygiene before the optimizer step:
+    //   - NaN/Inf → skip the step (Adam's m/v state is permanent;
+    //     absorbing a non-finite value corrupts every future update).
+    //   - global L2 > max_grad_norm → rescale all grads in place. Disabled
+    //     when max_grad_norm == 0.0.
+    let raw_norm = match global_grad_norm(&grad_vecs) {
+        Some(n) => n,
+        None => return Ok(StepOutcome::Skipped {
+            loss: loss_val,
+            reason: "non-finite gradients",
+        }),
+    };
+    let clipped = max_grad_norm > 0.0 && raw_norm > max_grad_norm;
+    if clipped {
+        scale_grads_in_place(&mut grad_vecs, max_grad_norm / raw_norm.max(1e-12));
+    }
 
     let mut param_bufs: Vec<_> = param_vecs.iter().map(|v| dev.upload(v)).collect();
     let grad_bufs: Vec<_> = grad_vecs.iter().map(|v| dev.upload(v)).collect();
@@ -617,7 +686,7 @@ pub fn vulkan_tiny_train_step(
         .collect::<Result<Vec<_>>>()?;
     splat_updated(params, &updated, &leaves);
 
-    Ok(loss_val)
+    Ok(StepOutcome::Updated { loss: loss_val, grad_norm: raw_norm, clipped })
 }
 
 // ─── Save in candle-compatible safetensors layout ────────────────────────────
@@ -861,6 +930,10 @@ pub struct VulkanTinyTrainConfig {
     pub batch_size: u32,
     pub lr: f64,
     pub img_size: u32,
+    /// Global L2-norm clip for parameter gradients each step. 0.0 disables
+    /// clipping. ~1.0 is robust for z-scored input; higher values let the
+    /// optimizer take larger swings early in training.
+    pub max_grad_norm: f32,
 }
 
 pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
@@ -908,6 +981,8 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
         }
     }
 
+    println!("vulkan: max_grad_norm={} (0=off)", cfg.max_grad_norm);
+
     let t0 = std::time::Instant::now();
     for epoch in 0..cfg.epochs {
         let epoch_start = std::time::Instant::now();
@@ -916,6 +991,8 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
 
         let mut epoch_loss = 0.0f64;
         let mut batches = 0u32;
+        let mut clipped_count = 0u32;
+        let mut skipped_count = 0u32;
         let num_batches = n.div_ceil(cfg.batch_size as usize);
         let mut rng = rand::thread_rng();
 
@@ -970,26 +1047,40 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
 
             let cond_slice = if cond_dataset.is_some() { Some(batch_cond.as_slice()) } else { None };
             let step_t0 = std::time::Instant::now();
-            let loss = vulkan_tiny_train_step(
+            let outcome = vulkan_tiny_train_step(
                 &dev, &mut opt, &mut params,
                 &batch_clean, cond_slice, &batch_noise,
                 &noise_amounts, &batch_super, &batch_tags,
-                bs, cfg.img_size,
+                bs, cfg.img_size, cfg.max_grad_norm,
             )?;
             let step_dt = step_t0.elapsed().as_secs_f32();
+            let loss = outcome.loss();
             if loss.is_nan() {
                 anyhow::bail!("vulkan: NaN loss at epoch {} batch {}", epoch + 1, batch_idx);
             }
+            match outcome {
+                StepOutcome::Updated { grad_norm, clipped, .. } => {
+                    if clipped { clipped_count += 1; }
+                    if batch_idx < 3 || batch_idx % 100 == 0 {
+                        let clip_tag = if clipped { " *CLIP*" } else { "" };
+                        println!("    batch {}/{} loss={:.5} |g|={:.3}{} ({:.2}s/step)",
+                            batch_idx + 1, num_batches, loss, grad_norm, clip_tag, step_dt);
+                    }
+                }
+                StepOutcome::Skipped { reason, .. } => {
+                    skipped_count += 1;
+                    println!("    batch {}/{} loss={:.5} SKIPPED ({reason}) ({:.2}s/step)",
+                        batch_idx + 1, num_batches, loss, step_dt);
+                }
+            }
             epoch_loss += loss as f64;
             batches += 1;
-            if batch_idx < 3 || batch_idx % 100 == 0 {
-                println!("    batch {}/{} loss={:.5} ({:.2}s/step)", batch_idx + 1, num_batches, loss, step_dt);
-            }
         }
 
         let avg = if batches > 0 { epoch_loss / batches as f64 } else { 0.0 };
         let dt = epoch_start.elapsed().as_secs_f32();
-        println!("  vulkan epoch {}/{}: loss={:.5} ({:.1}s)", epoch + 1, cfg.epochs, avg, dt);
+        println!("  vulkan epoch {}/{}: loss={:.5} clipped={}/{} skipped={} ({:.1}s)",
+            epoch + 1, cfg.epochs, avg, clipped_count, batches, skipped_count, dt);
 
         // Save every epoch — small file, lets us inspect conditioning behavior.
         save_candle_safetensors(&params, &cfg.output)?;

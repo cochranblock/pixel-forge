@@ -743,6 +743,11 @@ enum Cmd {
         /// Learning rate.
         #[arg(long, default_value_t = 1e-4)]
         lr: f64,
+        /// Global L2-norm clip on parameter gradients each step. 0 = off.
+        /// Skips the optimizer step (preserves Adam state) when grads
+        /// contain NaN/Inf — required for stable z-score training.
+        #[arg(long, default_value_t = 1.0)]
+        max_grad_norm: f32,
     },
     /// Generate conditioning data for 6ch Cinder-detail fine-tuning.
     /// Downscales each training image to 16x16 then back to 32x32 (nearest-neighbor),
@@ -2328,7 +2333,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             println!("saved: {output}");
         }
         #[cfg(feature = "vulkan")]
-        Cmd::TrainCinderVk { data, condition, output, resume, epochs, batch_size, lr } => {
+        Cmd::TrainCinderVk { data, condition, output, resume, epochs, batch_size, lr, max_grad_norm } => {
             let cfg = pixel_forge::vulkan_tiny::VulkanTinyTrainConfig {
                 data_dir: data,
                 cond_dir: condition,
@@ -2338,6 +2343,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 batch_size,
                 lr,
                 img_size: 32,
+                max_grad_norm,
             };
             pixel_forge::vulkan_tiny::vulkan_tiny_train(&cfg)?;
         }
