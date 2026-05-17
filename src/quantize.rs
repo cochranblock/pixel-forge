@@ -199,6 +199,16 @@ pub fn load_varmap(varmap: &mut candle_nn::VarMap, path: &str) -> Result<()> {
 
     let tensors = candle_core::safetensors::load_buffer(buf, &candle_core::Device::Cpu)?;
     let data = varmap.data().lock().unwrap();
+    if std::env::var("PF_DUMP_VARMAP").is_ok() {
+        let mut names: Vec<_> = data.iter().map(|(n, v)| (n.clone(), v.as_tensor().shape().dims().to_vec())).collect();
+        names.sort();
+        eprintln!("PF_DUMP_VARMAP: model has {} vars", names.len());
+        for (n, s) in &names {
+            let file_shape = tensors.get(n).map(|t| t.shape().dims().to_vec()).unwrap_or_default();
+            let mark = if file_shape == *s { "✓" } else { "✗" };
+            eprintln!("  {mark} {n}  model={s:?}  file={file_shape:?}");
+        }
+    }
     for (name, var) in data.iter() {
         if let Some(src) = tensors.get(name) {
             let src_f32 = if src.dtype() == DType::F16 {
@@ -206,7 +216,12 @@ pub fn load_varmap(varmap: &mut candle_nn::VarMap, path: &str) -> Result<()> {
             } else {
                 src.clone()
             };
-            var.set(&src_f32.to_device(var.device())?)?;
+            let src_tensor = src_f32.to_device(var.device())?;
+            var.set(&src_tensor).map_err(|e| anyhow::anyhow!(
+                "load_varmap: tensor '{name}' shape mismatch (model expects {:?}, file has {:?}): {e}",
+                var.as_tensor().shape().dims(),
+                src_tensor.shape().dims(),
+            ))?;
         }
     }
     Ok(())
