@@ -84,6 +84,74 @@
 
 ## Entries
 
+### 2026-05-15 — Quench EDM Training + Recipe Regression Diagnosis
+
+**What:** Kicked off the first end-to-end Quench training under the new EDM recipe on lf (RTX 3070, fp16, bs=16, 200 epochs, `--checkpoint-every 5`). Tmux session `quench-edm` writes per-epoch `.epochN` snapshots so progress can be sampled and the run can be killed early. ETA ~19h at 5.8 min/epoch.
+
+Diagnosed regression: the Apr 19 `pixel-forge-cinder.safetensors` (the model that produced the recognizable blob-character emulator screenshots) is bricked at inference. Two commits cooperated to orphan it: `701eea94` removed the no-sidecar fallback at load time, `a1f61fda` replaced the entire DDPM sampling path with EDM Euler — there is exactly one decode path now (inverse z-score → clamp → encode), and it expects EDM-preconditioned weights. Forging a sidecar wouldn't help; the math is fundamentally different. Quench EDM is the path back to working sprites with a strict capacity upgrade.
+
+**Why:** The 10-epoch Vulkan EDM Cinder run (`models/cinder-edm-vk.safetensors`, May 6) only painted noise — never trained long enough to evaluate the recipe at scale. Quench's 5.83M params (5.4× Cinder) plus self-attention is the smallest tier likely to actually paint pixel art under EDM, and it validates the recipe end-to-end on the proven candle/CUDA path before committing Anvil's ~22h.
+
+**Commits:** working tree only; will be referenced once training completes.
+
+**AI Role:** AI ran the audit (verified samples were noise, located the regression commits, traced the inference path), recommended the Quench-first ordering against jumping to Anvil, drove the lf SSH deployment (build, smoke-test, tmux launch, restart with `--checkpoint-every 5`). Human directed the tier choice and the early-checkpoint requirement.
+
+### 2026-05-05/06 — EDM Preconditioning + Mandatory Z-Score Sidecar
+
+**What:** Migrated the trainer + sampler from DDPM/clean-image prediction to Karras EDM (2022). Added `src/precond.rs` with EdmCoeffs (c_in/c_out/c_skip/c_noise + Min-SNR-γ=5 loss weight clamp), log-normal σ training distribution (P_MEAN=-1.2, P_STD=1.2), and ρ-stretched sampling schedule (RHO=7). Added `src/normalize.rs` for per-channel z-score with a `.normalize.json` sidecar — `pixel-forge normalize-stats --data <dir>` writes the manifest with mean, std, and σ_data (RMS of per-channel std). Z-score made mandatory at both train and sample time; the dual-mode tensor decoder shim was removed.
+
+WASM crate (`b649e42f`, Apr 30) mirrors z-score: `finalize_png` inverts before clamp + encode for browser inference parity.
+
+Quality-check CLI (`7cef7c9f`, May 6) computes per-image stats and cross-image pairwise diversity to compare runs objectively.
+
+**Why:** EDM is the strongest published formulation for sub-10M-param diffusion: σ-dependent activation scaling keeps the network well-conditioned at every noise level, which is exactly where tiny models fail (high-σ regime). z-score normalization centers the per-channel data distribution so the network doesn't waste capacity learning the dataset mean. The single decode path simplifies the wasm/desktop/Vulkan parity story — same math everywhere.
+
+**Tradeoff:** Mandatory sidecar orphaned every pre-z-score checkpoint. No backward-compat path was kept. See [2026-05-15] for the regression user impact.
+
+**Commits:** `9eaa2669` (normalize-stats CLI), `6b125b4a` (normalize module), `ab9c6763` (per-batch z-score in trainer), `06ee6b50` (wasm z-score), `701eea94` (mandatory sidecar), `8d68ff82` (precond module + σ_data on manifest), `6b2d32f1` (swap z-score → EDM), `a1f61fda` (Quench sampler + center-pixel data prep), `7cef7c9f` (quality-check), `5fc8cde3` `eea56065` (vulkan_tiny EDM mirroring), `91c99a49` (banner refresh).
+
+**AI Role:** AI implemented the precond + normalize modules end-to-end including unit tests (Min-SNR-γ clamp, σ schedule monotonicity, c_skip→1 at low σ, c_out→σ_data at high σ). Human directed the recipe choice (EDM over v-prediction) and the "make z-score mandatory" decision.
+
+### 2026-04-30 — WASM Browser Backend + Beta Landing Page
+
+**What:** Added a wasm crate (`b649e42f`) that runs Cinder/TinyUNet inference in the browser via WebGPU through any-gpu. Wired beta panel (`2888c8b1`) to the real WebGPU runtime — earlier version was a procedural placeholder. Sister commits earlier in April: web open-beta landing page with quad nav (`73e417ba`), procedural sprite demo with class-specific silhouettes (`1810517e`), upload + gallery.
+
+**Why:** Local-first means the model runs *on the user's device* — including in a browser tab. WebGPU + any-gpu's WGSL shaders run the same forward pass that ships in the desktop binary, no Python/CUDA dependency.
+
+**Commits:** `b649e42f`, `2888c8b1`, `73e417ba`, `1810517e`, `1dcef64f` (rustls bump for the crate).
+
+**AI Role:** AI built the wasm forward pass and z-score parity. Human directed browser-as-target and the open-beta web design.
+
+### 2026-04-26 — Tiered Pipeline + Vulkan/any-gpu Backend for Cinder
+
+**What:** Added a 3-stage tiered generation pipeline (`37220e05`): per-class silo paints coarse shape → PaletteNet picks 8 class-appropriate colors → Cinder-detail (6ch UNet conditioned on the silo output) refines to 32×32. Routes via `class_router::pick_silo` reading `class_config.toml`; falls back to pure Cinder if no silo for the class.
+
+Added Vulkan/any-gpu backend for TinyUNet/Cinder training (`5469b0dd`) — full forward + reverse-mode autograd through the entire model on AMD via Vulkan. Enables training Cinder on bt's RX 5700 XT where CUDA cannot run. Earlier: `train-silo --vulkan` (`a68a6c0f`, Apr 12) routed MicroUNet silo training through any-gpu first.
+
+**Why:** Decomposing monolithic diffusion into specialists (palette, shape, detail) makes each stage easier to train and easier to swap. The Vulkan backend unblocks AMD GPUs across the IRONHIVE fleet — bt was idle because no Rust ML stack supported its 5700 XT.
+
+**Commits:** `37220e05` (tiered pipeline), `5469b0dd` (Vulkan/any-gpu Cinder), `a68a6c0f` (silo on Vulkan, earlier), `1810517e` (web silhouettes for the demo).
+
+**AI Role:** AI implemented the silo router, PaletteNet (~100K MLP), Cinder-detail 6ch conditioning path, and the Vulkan tape adapter (`vulkan_tiny.rs` 1000+ lines). Human directed the pipeline ordering and the AMD-coverage requirement.
+
+### 2026-04-10/11/12 — Per-Class Silos + Sponge Mesh + any-gpu Fleet Training
+
+**What:** Added per-class siloed MicroUNet (`de887913`, Apr 11) — 18 silos, ~97K params each, one per class. Each silo is a tiny shape-specialist trained on a single class's tiles. Added 5 new silos from Gemini-generated data (`b90a710a`, Apr 12). Added `train-silo --vulkan` (`a68a6c0f`, Apr 12) to train silos via any-gpu on AMD.
+
+Added Sponge Mesh (`ebafcb2b`, Apr 10): self-healing training that auto-retries on NaN loss or plateau (max 3 retries) — restores from the last good checkpoint, perturbs LR, resumes. Added `--sponge` CLI flag.
+
+Added `any-gpu` fleet backend + `train-fleet` command (`2a3dc0f1`, Apr 10) for multi-GPU distributed training across IRONHIVE nodes.
+
+Re-enabled skeleton seeding for hybrid class system (`ae8e9de0`, Apr 10) — `Skeletons` cmd now calls `compute_skeletons_v2` keyed by `(super_id, class_name)` instead of legacy integer class IDs. Fixed three silent bugs (`5905b86e`): `--medium` overwriting Cinder filename, `endesga` palette name mismatch, missing `--seed` on `cascade`.
+
+Enforced model boundary handoffs (`63aa0f70`) — no direct tensor pass-through between modules; all crossings go through typed marker functions for traceability.
+
+**Why:** The user wanted per-class quality + cross-vendor GPU coverage. Per-class silos let each tiny model overfit to one class's shape distribution (better than one model fighting 68 classes). Sponge Mesh removes the "training crashed at epoch 187, lost everything" failure mode.
+
+**Commits:** `ebafcb2b` (Sponge Mesh), `2a3dc0f1` (any-gpu fleet), `de887913` (per-class silos), `b90a710a` (5 new silos from Gemini), `a68a6c0f` (silo via Vulkan), `ae8e9de0` (skeleton v2), `5905b86e` (3 silent bug fixes), `63aa0f70` (model boundary enforcement).
+
+**AI Role:** AI built MicroUNet, the silo trainer, Sponge Mesh retry loop, and the any-gpu adapter. Human directed the per-class strategy, the AMD-on-bt requirement, and the boundary-enforcement audit.
+
 ### 2026-04-03 — NanoSign Model Integrity + Documentation P23
 
 **What:** Integrated [NanoSign](src/nanosign.rs) — BLAKE3 integrity signing for all model files. Spec: [kova/docs/NANOSIGN.md](https://github.com/cochranblock/kova/blob/main/docs/NANOSIGN.md). Every `.safetensors` file is signed on save (36 bytes: `NSIG` + BLAKE3 hash) and verified on load. Tampered files are rejected; unsigned files pass for backward compat. Covers all 6 save paths ([train](src/train.rs#L442), [discriminator](src/discriminator.rs), [judge](src/judge.rs), [expert](src/expert.rs), [combiner](src/combiner.rs), [lora](src/lora.rs)) and all 10 load paths ([quantize::load_varmap](src/quantize.rs#L161), --resume, and module-specific loaders). Added `blake3` dependency.
@@ -180,3 +248,9 @@ Tested CUDA on lf's RTX 3070 — same epoch speed as CPU (~780s), EMA caused OOM
 ---
 
 *Part of the [CochranBlock](https://cochranblock.org) zero-cloud architecture. All source under the Unlicense.*
+<!-- COCHRANBLOCK-BRAND-FOOTER:START - generated by cochranblock/scripts/brand-stamp.sh -->
+
+---
+
+<sub>&#9656; **THE COCHRAN BLOCK, LLC** &#183; CAGE `1CQ66` &#183; UEI `W7X3HAQL9CF9` &#183; UNLICENSE &#183; [cochranblock.org](https://cochranblock.org)</sub>
+<!-- COCHRANBLOCK-BRAND-FOOTER:END -->
