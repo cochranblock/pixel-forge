@@ -89,6 +89,8 @@ enum Cmd {
     },
     /// List available palettes.
     Palettes,
+    /// List all known class names grouped by super-category.
+    ListClasses,
     /// Download/cache the diffusion model.
     Setup,
     /// Train a tiny pixel art diffusion model from a dataset of PNGs.
@@ -984,6 +986,14 @@ PackageLicenseDeclared: MIT OR Apache-2.0
         Cmd::Palettes => {
             palette::list_palettes();
         }
+        Cmd::ListClasses => {
+            for super_id in 0..class_cond::NUM_SUPER as u32 {
+                println!("[{}] {}:", super_id, class_cond::super_name(super_id));
+                for class in class_cond::classes_for_super(super_id) {
+                    println!("  {class}");
+                }
+            }
+        }
         Cmd::Setup => {
             pipeline::download_model()?;
             println!("model cached and ready");
@@ -1440,6 +1450,12 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             if count == 0 {
                 anyhow::bail!("count must be at least 1");
             }
+            // Rewrite default model path to match the requested tier.
+            let model = if model == "pixel-forge-cinder.safetensors" {
+                if medium { "pixel-forge-quench.safetensors".to_string() } else { model }
+            } else {
+                model
+            };
             if !std::path::Path::new(&model).exists() {
                 anyhow::bail!("model not found: {model}\n\nTo train a model:\n  pixel-forge train --data data_v2_32 --epochs 100 --img-size 32\n\nOr download a pre-trained model and place it at:\n  {model}");
             }
@@ -2319,6 +2335,30 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             silo_steps, detail_steps, refine_t, cfg, seed, palette_model, output,
         } => {
             let cond = class_cond::lookup(&class.to_lowercase());
+
+            // Preflight: surface what's wired and what's missing so users aren't
+            // surprised when the pipeline silently degrades.
+            {
+                let silo_path = std::path::Path::new(&silo_dir).join(format!("{class}.safetensors"));
+                let silo_cfg  = std::path::Path::new(&silo_dir).join("class_config.toml");
+                let has_silo  = silo_path.exists() || silo_cfg.exists();
+                let detail_exists = std::path::Path::new(&detail_model).exists();
+                let detail_channels = if detail_exists { quantize::detect_in_channels(&detail_model) } else { 0 };
+                let has_6ch   = detail_channels == 6;
+                println!("tiered preflight for '{class}':");
+                println!("  Stage 1 silo  : {}", if has_silo { "OK" } else { "MISSING — run: cargo run --release -- train-silo --class {class}" });
+                println!("  Stage 3 detail: {}", if !detail_exists {
+                    format!("MISSING — run: cargo run --release -- prep-silo-cond && train --condition data_silo_cond_32 --output {detail_model}")
+                } else if !has_6ch {
+                    format!("WARNING: {detail_model} is {detail_channels}ch (plain Cinder) — conditioning ignored; need 6ch Cinder-detail for full pipeline")
+                } else {
+                    format!("OK (6ch Cinder-detail at {detail_model})")
+                });
+                if !has_silo || !has_6ch {
+                    println!("  Running in degraded mode — output quality will be lower than full tiered pipeline.");
+                }
+            }
+
             let config = tiered_pipeline::TieredConfig {
                 silo_dir: std::path::PathBuf::from(&silo_dir),
                 detail_model: std::path::PathBuf::from(&detail_model),
