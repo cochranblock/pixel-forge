@@ -44,9 +44,10 @@ impl EdmCoeffs {
     ///
     /// Loss weight uses Min-SNR-γ clamping (Hang et al. 2023) to keep
     /// the weight bounded — `λ(σ) = 1/c_out²` blows up at low σ and
-    /// destabilizes Adam. γ=5 matches the published sweet spot.
+    /// destabilizes Adam. γ=13 is required for σ_data≈0.46: the minimum
+    /// unclamped weight is 1/σ_data²≈4.7, so γ=5 is a no-op at all σ levels.
     pub fn at(sigma: f32, sigma_data: f32) -> Self {
-        Self::with_gamma(sigma, sigma_data, 5.0)
+        Self::with_gamma(sigma, sigma_data, 13.0)
     }
 
     /// Same as [`at`] but lets the caller override the Min-SNR-γ cap.

@@ -638,7 +638,7 @@ fn train_inner(
     println!("training: {} epochs, bs={}, lr={}, {} samples", config.epochs, config.batch_size, config.lr, n);
     println!("augmentation: palette swap + h-flip (50%) + rotation (0/90/180/270) + brightness (50%)");
     let prec = if config.mixed_precision { " | fp16" } else { "" };
-    println!("recipe: EDM (log-normal σ + σ-precond + Min-SNR-γ=5) | {cfg_info} | ema={}{prec}",
+    println!("recipe: EDM (log-normal σ + σ-precond + Min-SNR-γ=13) | {cfg_info} | ema={}{prec}",
         config.ema);
 
     // EDM still requires the normalize manifest — uses mean for centering
