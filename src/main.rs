@@ -768,9 +768,9 @@ enum Cmd {
         /// Training data directory (uses the standard preprocess cache).
         #[arg(short, long, default_value = "data_v3_32")]
         data: String,
-        /// Output JSON manifest path.
-        #[arg(short, long, default_value = "data_v3_32/normalize.json")]
-        output: String,
+        /// Output JSON manifest path (default: <data>/normalize.json).
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Numeric quality check: pixel diversity, color count, brightness,
     /// edge density across a directory of generated PNGs. Useful to track
@@ -2419,6 +2419,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 compressed.len() as f64 / 1_048_576.0);
         }
         Cmd::NormalizeStats { data, output } => {
+            let output = output.unwrap_or_else(|| format!("{}/normalize.json", &data));
             // Single-pass per-channel mean/std on the standard preprocess cache.
             // f64 accumulators — ~20M samples per channel stays well inside f64.
             let src = train::preprocess(&data, 32)?;
