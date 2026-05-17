@@ -19,6 +19,7 @@
 //! Total: 153 bytes — well under the 255-byte LoRa MTU.
 
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey, Verifier, Signature};
+use rand::{Rng, RngExt};
 use image::RgbaImage;
 use sha2::{Sha256, Digest};
 
@@ -132,7 +133,7 @@ pub fn hash_pixels(pixels: &[f32]) -> [u8; 32] {
 
 /// Generate a new Ed25519 keypair. Returns (signing_key_bytes, verifying_key_bytes).
 pub fn generate_keypair() -> ([u8; 32], [u8; 32]) {
-    let sk = SigningKey::generate(&mut rand::thread_rng());
+    let sk = SigningKey::from_bytes(&rand::rng().random::<[u8; 32]>());
     let vk = sk.verifying_key();
     (sk.to_bytes(), vk.to_bytes())
 }
@@ -153,7 +154,7 @@ pub fn load_or_create_keypair() -> anyhow::Result<SigningKey> {
         let arr: [u8; 32] = bytes.try_into().unwrap();
         Ok(SigningKey::from_bytes(&arr))
     } else {
-        let sk = SigningKey::generate(&mut rand::thread_rng());
+        let sk = SigningKey::from_bytes(&rand::rng().random::<[u8; 32]>());
         std::fs::write(&key_path, sk.to_bytes())?;
         // Restrict permissions on Unix
         #[cfg(unix)]

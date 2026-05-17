@@ -6,7 +6,7 @@
 use anyhow::Result;
 use candle_core::{DType, Tensor};
 use candle_nn::{self as nn, Optimizer, VarBuilder, VarMap};
-use rand::seq::SliceRandom;
+use rand::{Rng, RngExt, seq::SliceRandom};
 
 use crate::expert::{self, ExpertSet};
 use crate::medium_unet::MediumUNet;
@@ -55,7 +55,7 @@ pub fn train_experts(
     for epoch in 0..epochs {
         let t0 = std::time::Instant::now();
         let mut indices: Vec<usize> = (0..n).collect();
-        indices.shuffle(&mut rand::thread_rng());
+        indices.shuffle(&mut rand::rng());
 
         let mut epoch_loss = 0.0f64;
         let mut batches = 0;
@@ -79,7 +79,7 @@ pub fn train_experts(
             let y_batch = Tensor::new(batch_labels.as_slice(), &device)?;
 
             // Pick a random denoising step to simulate
-            let step = rand::random::<usize>() % total_steps;
+            let step = rand::rng().random_range(0..total_steps);
             let noise_level = 1.0 - (step as f32 / total_steps as f32);
             let noise = Tensor::rand(0f32, 1f32, x_clean.shape(), &device)?;
             let x_noisy = ((&x_clean * (1.0 - noise_level as f64))? + (&noise * noise_level as f64)?)?;

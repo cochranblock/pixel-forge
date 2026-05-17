@@ -632,7 +632,7 @@ pub fn vulkan_micro_train(
 
         use rand::seq::SliceRandom;
         let mut indices: Vec<usize> = (0..n).collect();
-        indices.shuffle(&mut rand::thread_rng());
+        indices.shuffle(&mut rand::rng());
 
         let num_batches = n.div_ceil(batch_size as usize);
         for batch_idx in 0..num_batches {
@@ -648,8 +648,8 @@ pub fn vulkan_micro_train(
                 batch_clean.extend_from_slice(&dataset.pixels[src..src + stride]);
             }
 
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
+            use rand::{Rng, RngExt};
+            let mut rng = rand::rng();
             let batch_noise: Vec<f32> = (0..bs as usize * stride)
                 .map(|_| {
                     let u1: f32 = rng.r#gen::<f32>().max(1e-7);

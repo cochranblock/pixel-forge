@@ -162,7 +162,7 @@ pub fn train_judge(store: &SwipeStore, device: &Device) -> Result<(VarMap, Micro
 
     // Split 80/20 for train/val (shuffle first)
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.shuffle(&mut rand::thread_rng());
+    indices.shuffle(&mut rand::rng());
     let val_count = (n / 5).max(2); // at least 2 validation samples
     let train_count = n - val_count;
     let train_idx = &indices[..train_count];
@@ -192,7 +192,7 @@ pub fn train_judge(store: &SwipeStore, device: &Device) -> Result<(VarMap, Micro
     for epoch in 0..RETRAIN_EPOCHS {
         // --- Train ---
         let mut shuffled_train: Vec<usize> = train_idx.to_vec();
-        shuffled_train.shuffle(&mut rand::thread_rng());
+        shuffled_train.shuffle(&mut rand::rng());
 
         let mut epoch_loss = 0.0f64;
         let mut batches = 0;

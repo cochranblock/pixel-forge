@@ -17,7 +17,7 @@
 use anyhow::Result;
 use candle_core::{DType, Device, IndexOp, Module, Result as CResult, Tensor};
 use candle_nn::{self as nn, Optimizer, VarBuilder, VarMap};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rand::seq::SliceRandom;
 
 use crate::scene::{self, SceneGrid, CELL_DIM, GRID_CELLS, TOTAL_CLASSES};
@@ -265,7 +265,7 @@ pub fn train_combiner(
         ..Default::default()
     })?;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut final_loss = 0.0f32;
     let mut final_acc = 0.0f32;
 
@@ -282,7 +282,7 @@ pub fn train_combiner(
             let bs = chunk.len();
 
             // Build masked batch
-            let mask_frac = rng.r#gen_range(config.mask_frac_min..=config.mask_frac_max);
+            let mask_frac = rng.random_range(config.mask_frac_min..=config.mask_frac_max);
             let mut input_enc = Vec::with_capacity(bs * GRID_CELLS * CELL_DIM);
             let mut target_ids = Vec::with_capacity(bs * GRID_CELLS);
             let mut mask_flags = Vec::with_capacity(bs * GRID_CELLS);
@@ -393,7 +393,7 @@ pub fn generate_scene(
     device: &Device,
 ) -> Result<SceneGrid> {
     let mut grid = seed.cloned().unwrap_or_else(SceneGrid::empty);
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Fill order: bottom-to-top, left-to-right
     let mut fill_order: Vec<(usize, usize)> = Vec::with_capacity(GRID_CELLS);
@@ -432,7 +432,7 @@ fn sample_with_temperature(logits: &[f32], temperature: f32, rng: &mut impl Rng)
     let exp: Vec<f32> = logits.iter().map(|&l| ((l - max_l) / t).exp()).collect();
     let sum: f32 = exp.iter().sum();
 
-    let mut r: f32 = rng.r#gen();
+    let mut r: f32 = rng.random();
     for (i, &e) in exp.iter().enumerate() {
         r -= e / sum;
         if r <= 0.0 { return i as u32; }

@@ -985,7 +985,7 @@ pub struct VulkanTinyTrainConfig {
 
 pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
     use rand::seq::SliceRandom;
-    use rand::Rng;
+    use rand::{Rng, RngExt};
 
     let dev = GpuDevice::gpu()?;
     println!("vulkan: {} ({})", dev.adapter_name, dev.backend);
@@ -1037,14 +1037,14 @@ pub fn vulkan_tiny_train(cfg: &VulkanTinyTrainConfig) -> Result<()> {
     for epoch in 0..cfg.epochs {
         let epoch_start = std::time::Instant::now();
         let mut indices: Vec<usize> = (0..n).collect();
-        indices.shuffle(&mut rand::thread_rng());
+        indices.shuffle(&mut rand::rng());
 
         let mut epoch_loss = 0.0f64;
         let mut batches = 0u32;
         let mut clipped_count = 0u32;
         let mut skipped_count = 0u32;
         let num_batches = n.div_ceil(cfg.batch_size as usize);
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for batch_idx in 0..num_batches {
             let start = batch_idx * cfg.batch_size as usize;

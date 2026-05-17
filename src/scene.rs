@@ -8,7 +8,7 @@
 //! training data for the Combiner before any user data exists.
 
 use image::RgbaImage;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
 /// Grid dimensions.
@@ -120,7 +120,7 @@ impl SceneGrid {
 
     /// Sample from logits with temperature. Each cell independently sampled.
     pub fn from_logits_sampled(logits: &[f32], temperature: f32) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut cells = Vec::with_capacity(GRID_CELLS);
         for i in 0..GRID_CELLS {
             let row = i / GRID_W;
@@ -149,11 +149,11 @@ impl SceneGrid {
     /// Create a masked copy — randomly set `frac` of cells to empty.
     /// Returns (masked_grid, mask_indices) where mask_indices are the cells that were masked.
     pub fn masked(&self, frac: f32) -> (Self, Vec<usize>) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut grid = self.clone();
         let mut masked = Vec::new();
         for i in 0..GRID_CELLS {
-            if rng.r#gen::<f32>() < frac {
+            if rng.random::<f32>() < frac {
                 grid.cells[i].class_id = EMPTY_CLASS;
                 masked.push(i);
             }
@@ -244,7 +244,7 @@ fn sample_categorical(logits: &[f32], temperature: f32, rng: &mut impl Rng) -> u
     let sum: f32 = exp.iter().sum();
     let probs: Vec<f32> = exp.iter().map(|&e| e / sum).collect();
 
-    let mut r: f32 = rng.r#gen();
+    let mut r: f32 = rng.random();
     for (i, &p) in probs.iter().enumerate() {
         r -= p;
         if r <= 0.0 {
@@ -356,7 +356,7 @@ fn rules_for_biome(biome: Biome) -> Vec<PlacementRule> {
 
 /// Generate one rule-seeded scene for a given biome.
 pub fn generate_seeded(biome: Biome) -> SceneGrid {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut grid = SceneGrid::empty();
     let rules = rules_for_biome(biome);
 
@@ -367,7 +367,7 @@ pub fn generate_seeded(biome: Biome) -> SceneGrid {
                 let cell = grid.get(col, row);
                 // Only fill empty cells (earlier rules take priority)
                 if !cell.is_empty() { continue; }
-                if rng.r#gen::<f32>() < rule.density {
+                if rng.random::<f32>() < rule.density {
                     grid.set(col, row, rule.class_id);
                 }
             }

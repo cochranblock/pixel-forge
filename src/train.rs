@@ -12,7 +12,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::{self as nn, Optimizer, VarBuilder, VarMap};
 use image::RgbaImage;
 use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -447,7 +447,7 @@ fn decode_png(path: &Path, img_size: u32) -> Option<Vec<f32>> {
 fn palette_swap(px: &mut [f32], _stride: usize, img_size: u32) {
     use std::collections::HashMap;
     let n = (img_size * img_size) as usize;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Pass 1: dedupe into a vec (order matters for shuffle mapping)
     let mut colors: Vec<u32> = Vec::with_capacity(64);
@@ -678,11 +678,11 @@ fn train_inner(
         opt.set_learning_rate(lr);
 
         let mut indices: Vec<usize> = (0..n).collect();
-        indices.shuffle(&mut rand::thread_rng());
+        indices.shuffle(&mut rand::rng());
 
         let mut epoch_loss = 0.0;
         let mut batch_count = 0;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let num_batches = n.div_ceil(config.batch_size);
         for batch_idx in 0..num_batches {
@@ -699,20 +699,20 @@ fn train_inner(
                 let src_start = idx * stride;
                 let mut sample = dataset.pixels[src_start..src_start + stride].to_vec();
 
-                if rng.r#gen_bool(0.5) {
+                if rng.random_bool(0.5) {
                     palette_swap(&mut sample, stride, config.img_size);
                 }
-                if rng.r#gen_bool(0.5) {
+                if rng.random_bool(0.5) {
                     hflip(&mut sample, config.img_size);
                 }
                 // Random rotation: 0/90/180/270 degrees (25% each)
-                let rotations = rng.gen_range(0..4u8);
+                let rotations = rng.random_range(0..4u8);
                 for _ in 0..rotations {
                     rot90_cw(&mut sample, config.img_size);
                 }
                 // Random brightness (50% chance): multiply by [0.8, 1.2], clamp [0,1]
-                if rng.r#gen_bool(0.5) {
-                    let factor = rng.gen_range(0.8f32..1.2f32);
+                if rng.random_bool(0.5) {
+                    let factor = rng.random_range(0.8f32..1.2f32);
                     for v in sample.iter_mut() {
                         *v = (*v * factor).clamp(0.0, 1.0);
                     }
@@ -726,7 +726,7 @@ fn train_inner(
                 batch_px.extend_from_slice(&sample);
 
                 // CFG: randomly drop conditioning to train unconditional path
-                if config.cfg_dropout > 0.0 && rng.r#gen_bool(config.cfg_dropout) {
+                if config.cfg_dropout > 0.0 && rng.random_bool(config.cfg_dropout) {
                     batch_labels.push(crate::class_cond::CFG_NULL_SUPER);
                     batch_super.push(crate::class_cond::CFG_NULL_SUPER);
                     batch_tags.extend_from_slice(&crate::class_cond::CFG_NULL_TAGS);
@@ -747,7 +747,7 @@ fn train_inner(
             // Replaces the old cosine/linear t∈[0,1] schedule.
             let mut sigmas_vec = Vec::with_capacity(bs);
             for _ in 0..bs {
-                sigmas_vec.push(crate::precond::sigma_from_uniform(rng.r#gen::<f32>()));
+                sigmas_vec.push(crate::precond::sigma_from_uniform(rng.random::<f32>()));
             }
             let sigma_data = normalizer.sigma_data();
             let coeffs: Vec<crate::precond::EdmCoeffs> = sigmas_vec.iter()
@@ -987,8 +987,8 @@ pub fn seeded_noise(seed: Option<u64>, class_id: u32, index: u32, img_size: u32,
             let mut rng = rand::rngs::StdRng::seed_from_u64(combined);
             // Box-Muller transform for Gaussian samples
             let vals: Vec<f32> = (0..3 * n * n).map(|_| {
-                let u1: f32 = rng.r#gen::<f32>().max(1e-7);
-                let u2: f32 = rng.r#gen::<f32>();
+                let u1: f32 = rng.random::<f32>().max(1e-7);
+                let u2: f32 = rng.random::<f32>();
                 (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
             }).collect();
             Tensor::from_vec(vals, (1, 3, n, n), device)

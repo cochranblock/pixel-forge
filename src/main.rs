@@ -1770,8 +1770,8 @@ PackageLicenseDeclared: MIT OR Apache-2.0
 
             // 4. RENDER — composite sprites into grid
             println!("step 4: rendering scene...");
-            let mut rng = rand::thread_rng();
-            use rand::seq::SliceRandom;
+            let mut rng = rand::rng();
+            use rand::seq::{SliceRandom, IndexedRandom};
             let mut sprites_by_class: std::collections::HashMap<u32, Vec<&Vec<f32>>> =
                 std::collections::HashMap::new();
             for (cid, pixels, _) in &accepted {
