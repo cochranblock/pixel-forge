@@ -1,0 +1,19 @@
+{
+  "channels": 3,
+  "img_size": 32,
+  "mean": [
+    0.6925636749660178,
+    0.6925636749660178,
+    0.6925636749660178
+  ],
+  "note": "input space [0,1]; apply (x - mean)/std to enter z-space, invert with x*std + mean before clamp/encode. sigma_data is the EDM preconditioning constant (RMS of per-channel std)",
+  "pixel_count": 21093376,
+  "sample_count": 20599,
+  "sigma_data": 0.46143171191215515,
+  "std": [
+    0.4614317187662567,
+    0.4614317187662567,
+    0.4614317187662567
+  ],
+  "version": 1
+}

@@ -5,13 +5,14 @@
   <img alt="PIXEL FORGE - The Cochran Block" src="assets/brand/banner.svg" width="100%">
 </picture>
 
-[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-00d9ff?style=for-the-badge&labelColor=050508)](https://unlicense.org)
-[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-fbbf24?style=for-the-badge&labelColor=050508)](https://www.rust-lang.org)
-[![The Cochran Block](https://img.shields.io/badge/The%20Cochran%20Block-CAGE%201CQ66-00d9ff?style=for-the-badge&labelColor=050508)](https://cochranblock.org)
-[![Veteran-Owned](https://img.shields.io/badge/Veteran--Owned-SDVOSB%20Pending-fbbf24?style=for-the-badge&labelColor=050508)](https://cochranblock.org)
+[![License: Unlicense](assets/brand/badges/license-unlicense.svg)](https://unlicense.org)
+[![Built with Rust](assets/brand/badges/built-with-rust.svg)](https://www.rust-lang.org)
+[![The Cochran Block — CAGE 1CQ66](assets/brand/badges/cage-1cq66.svg)](https://cochranblock.org)
+[![Veteran-Owned — SDVOSB Certified](assets/brand/badges/sdvosb-certified.svg)](https://cochranblock.org)
 
 > &#9656; **RUST** &#183; **WASM** &#183; **IMAGE PIPELINE**
 <!-- COCHRANBLOCK-BRAND-HEADER:END -->
+
 
 <p align="center">
   <img src="assets/pixel-forge-logo.png" alt="Pixel Forge" width="256">
