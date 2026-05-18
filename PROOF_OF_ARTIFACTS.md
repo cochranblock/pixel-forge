@@ -47,7 +47,8 @@ Note: Expert heads, Judge model, and Scene generation exist as code but are not 
 | CFG scale | 3.0 (fixed from 1.0 on 2026-04-02) | [train.rs:759](src/train.rs#L759), commit `68f2183a` |
 | Augmentation | palette swap, h-flip, rotation (0/90/180/270), brightness ×[0.8,1.2] | [train.rs:702-718](src/train.rs#L702) |
 | Model integrity | NanoSign: BLAKE3 sign on save, verify on load | [src/nanosign.rs](src/nanosign.rs), spec: [NANOSIGN.md](https://github.com/cochranblock/kova/blob/main/docs/NANOSIGN.md) |
-| Diffusion recipe | EDM (Karras 2022): log-normal σ training + σ-precond + Min-SNR-γ=5 | [src/precond.rs](src/precond.rs), commits `8d68ff82` `6b2d32f1` `a1f61fda` |
+| Diffusion recipe | EDM (Karras 2022): log-normal σ + σ-precond + Min-SNR-**γ=13** (was γ=5, was no-op) | [src/precond.rs](src/precond.rs), commits `8d68ff82` `6b2d32f1` `a1f61fda` `3f72254b` |
+| BCE silhouette recipe | No diffusion: sigmoid + stable BCE-with-logits, h-flip + rotation only | [src/train.rs](src/train.rs) `train_bce_inner`, commit `2640e90e` |
 | Data normalization | Per-channel z-score with mandatory `.normalize.json` sidecar | [src/normalize.rs](src/normalize.rs), commit `701eea94` |
 | σ_data (EDM constant) | 0.4007 (RMS of per-channel std on `data_v3_32`) | [data_v3_32/normalize.json](data_v3_32/normalize.json) |
 | GPU backends | CUDA, Metal, **Vulkan via [any-gpu](https://github.com/cochranblock/any-gpu)**, CPU | [Cargo.toml:31](Cargo.toml#L31), [src/vulkan_tiny.rs](src/vulkan_tiny.rs) |
@@ -70,26 +71,48 @@ Total training time: 151,441 seconds (~42 hours). Config: bs=16, lr=2e-4, cosine
 
 **Anvil v7** (in progress as of 2026-04-02): fine-tuning from v6, bs=8, lr=5e-5, rotation augmentation, no EMA. Running on lf CPU.
 
-## Quench EDM (in progress, started 2026-05-15)
+## Anvil-BCE Silhouette Training (in progress, started 2026-05-18)
 
-First end-to-end training under the EDM recipe. Source: `~/pixel-forge/quench-edm.log` on lf (`ssh lf 'tail -f ~/pixel-forge/quench-edm.log'`).
+First stage of the Shape-Diffusion Signal Split cascade. BCE loss (no diffusion) on binary silhouette masks. Source: `/tmp/anvil-bce.log` on lf.
+
+| Setting | Value |
+|---------|-------|
+| Tier | Anvil (AnvilUNet, 3-channel input) |
+| Params | 16,908,643 (64.5 MB) |
+| Recipe | **BCE (no diffusion)** — hflip + rotation only, sigmoid + stable BCE with logits |
+| Batch size | 16 |
+| Learning rate | 2e-4 with cosine decay, 5-epoch warmup |
+| Epochs target | 200 |
+| Data | `data_sil_32/` — 20,599 binary silhouette masks (R=G=B=mask, α→binary) |
+| Backend | CUDA (RTX 3070 on lf), 100% GPU util, ~2.7 GB VRAM |
+| Per-epoch time | ~14 min |
+| Output | `pixel-forge-anvil-sil.safetensors` |
+
+**Loss trajectory (confirmed descending, no plateau):**
+
+| Epoch | Loss | Notes |
+|-------|------|-------|
+| 1 | 0.314 | Random init; baseline ln(2) ≈ 0.693 |
+| 11 | 0.160 | >50% reduction |
+| 21 | 0.122 | EDM plateau point — BCE still descending |
+| 46 | 0.093 | Continuing to drop |
+
+## Quench EDM (abandoned 2026-05-18 — replaced by BCE cascade)
+
+EDM training ran but plateau'd. Source: `/tmp/quench-g13.log` on lf.
 
 | Setting | Value |
 |---------|-------|
 | Tier | Quench (MediumUNet, 3-channel input) |
 | Params | 5,832,643 (22.2 MB) |
-| Recipe | EDM (log-normal σ + σ-precond + Min-SNR-γ=5), cfg_drop=0.1, ema=false |
-| Precision | fp16 forward, fp32 optimizer |
+| Recipe | EDM (log-normal σ + σ-precond + **Min-SNR-γ=5 → fixed to γ=13**) |
 | Batch size | 16 |
-| Learning rate | 2e-4 with cosine decay, 5-epoch warmup |
-| Epochs target | 200 |
-| Checkpoint cadence | Every 5 epochs (`.epoch5`, `.epoch10`, ... snapshots) |
-| Center | mean=[0.40, 0.34, 0.36], σ_data=0.4007 |
-| Backend | CUDA (RTX 3070 Laptop on lf), 100% GPU util, ~1.4 GB VRAM |
-| Per-epoch time | ~5.8 min (warmup epoch 1 baseline) |
-| Total ETA | ~19 hours |
+| Learning rate | 2e-4 with cosine decay |
+| Result | **Plateau at epoch 11 (loss 8.97), same as γ=5 run** — EDM wrong for binary targets |
 
-## Recipe Migration Status (2026-05-15)
+**Diagnosis:** γ=5 was a no-op for σ_data=0.4007 (1/σ_data²=6.23>5, clamps every sample). Fixed to γ=13 in `3f72254b`. Even with γ=13, plateau persisted — root cause is that EDM's continuous Gaussian noise model is fundamentally mismatched to binary pixel art structure. Replaced by BCE cascade.
+
+## Recipe Migration Status (2026-05-18)
 
 | Checkpoint | Trained recipe | Sidecar present | Loadable now | Notes |
 |------------|---------------|-----------------|--------------|-------|
@@ -218,7 +241,7 @@ find src -name "*.rs" | xargs wc -l       # Line count
 
 | Command | Status | What It Does |
 |---------|--------|-------------|
-| `train` | working | Train Cinder/Quench/Anvil from dataset (EDM recipe) |
+| `train` | working | Train Cinder/Quench/Anvil — EDM (color) or `--bce` (silhouette shape) |
 | `train-cinder-vk` | working | Train Cinder via Vulkan/any-gpu (AMD-friendly) |
 | `train-silo` | working | Train per-class MicroUNet silo (~97K params) |
 | `train-fleet` | working | Multi-node distributed training across IRONHIVE |

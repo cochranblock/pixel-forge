@@ -32,6 +32,32 @@
 **Commit:** `92748094`
 **Origin:** Michael Cochran's defense background — weapons systems verify firmware integrity before execution. AI models should have the same guarantee. Designed as an open standard, published at `kova/docs/NANOSIGN.md`.
 
+### Shape-Diffusion Signal Split (May 2026)
+
+**Invention:** A generation cascade that matches the loss function to the information type at each stage: binary cross-entropy (BCE) for shape/silhouette generation, diffusion (EDM) for color. The cascade is: Anvil-BCE → Quench-BCE → Quench-color (EDM conditioned on mask) → Cinder-detail.
+
+**The Problem:** Every pixel art generation attempt using EDM diffusion on binary silhouette masks plateau'd identically — different model sizes (Quench 5.83M, Anvil 16.9M), different γ values, different data. All runs hit loss ~8.5 at epoch 6 and stopped improving. EDM is the state-of-the-art diffusion recipe. Why would it fail on every run?
+
+**The Insight:** Diffusion models add Gaussian continuous noise to images and learn to reverse it. Binary masks (pixel = 0 or 1) are not continuous — the "hard" noise regime at medium σ that EDM targets for structural learning doesn't exist for binary data. BCE, by contrast, treats each pixel as an independent binary classification problem. No noise model, no score matching — just "output 0 or 1 for each pixel given the class." BCE converges because the problem is correctly framed.
+
+**The Evidence:**
+- EDM Quench (200 epochs): loss 5.33 → 3.71, plateau at epoch 21, output = noise. γ=5 was no-op (floor of 1/σ_data² = 6.23 > 5). Fixed to γ=13 — still plateau'd.
+- EDM Anvil on silhouettes (killed at epoch 11): loss 10.62 → 8.51, same plateau.
+- EDM Quench with γ=13 on color data (running): epoch 6: 8.91, epoch 11: 8.97 — flat.
+- **BCE Anvil on silhouettes (currently training):** epoch 1: 0.314 → epoch 46: 0.093, still descending. No plateau. Random init baseline is ln(2) ≈ 0.693 — the model crossed 50% reduction by epoch 11.
+
+**The Technique:**
+1. **Anvil-BCE** (16.9M params): class_cond → raw forward pass → sigmoid → binary mask. BCE with logits loss. No noise, no σ schedule, no preconditioning. Trains in hours not days.
+2. **Quench-BCE** (5.83M params): takes Anvil mask (3ch) + class_cond → refined mask with part detail (hands, feet, head). 6ch input via `--condition`.
+3. **Quench-color** (5.83M params, EDM): takes refined mask (3ch conditioning) + noise → color sprite. EDM conditioned on structure — now the noise model matches the target (continuous color).
+4. **Cinder-detail** (1.09M params, EDM): fine-detail pass conditioned on Quench-color output.
+
+**Result:** BCE converges where diffusion failed. The cascade assigns the right loss to the right problem: structure is classification, color is generation.
+
+**Named:** Shape-Diffusion Signal Split  
+**Commits:** `2640e90e` (BCE training mode), `3f72254b` (γ=13 fix + diagnosis)  
+**Origin:** Failed EDM runs forced the question: why does state-of-the-art diffusion fail on binary data? Answer: the noise model is wrong for the signal type. Different stages of generation require different losses.
+
 ### MoE Cascade Pipeline — Cinder to Quench to Anvil (March 2026)
 
 **Invention:** A tiered diffusion pipeline where a tiny model (Cinder, 1.09M params) generates rough output, a medium model (Quench, 5.83M params) refines it, and an XL model (Anvil, 16.9M params) adds detail — each tier uses the previous tier's output as its starting noise rather than pure random noise.
@@ -83,6 +109,27 @@
 ---
 
 ## Entries
+
+### 2026-05-17/18 — BCE Silhouette Pivot + γ=13 Diagnosis + Anvil-BCE Training
+
+**What:** Diagnosed why every EDM run plateau'd identically. Root cause: `EdmCoeffs::at()` hardcoded γ=5, but for σ_data=0.4007 the minimum 1/c_out² = 1/σ_data² ≈ 6.23 > 5, so γ=5 clamps **every single sample** — flat weighting identical to no Min-SNR at all. Fixed to γ=13 (`3f72254b`). Even with γ=13, Quench-color and Anvil-sil still plateau'd at epoch 6-11 — different model sizes, different data, same symptom. Diagnosis: diffusion is the wrong tool for binary mask generation regardless of weighting.
+
+Pivoted to **Shape-Diffusion Signal Split** architecture: BCE for shape stages (binary targets → classification loss), EDM for color stages (continuous targets → generative loss). Built `--bce` training mode (`2640e90e`): no noise, no σ sampling, no preconditioning — just direct forward pass + sigmoid + stable BCE with logits. Anvil-BCE training started on lf RTX 3070.
+
+**Loss trajectory (Anvil-BCE, in progress):**
+
+| Epoch | Loss | Notes |
+|-------|------|-------|
+| 1 | 0.314 | Random init baseline: ln(2) ≈ 0.693 |
+| 11 | 0.160 | >50% reduction — no plateau |
+| 21 | 0.122 | Where EDM permanently died; BCE still descending |
+| 46 | 0.093 | Still dropping, LR decay starting |
+
+**Also fixed:** normalize-stats output defaulted to wrong dir (hardcoded `data_v3_32/normalize.json` regardless of `--data`); `generate --medium` silently loaded Cinder; `list-classes` missing; `tiered` preflight missing. rand 0.8→0.10 API migration (RngExt trait split). any-gpu version constraint removed (path dep, varies per node).
+
+**Commits:** `3f72254b` (γ=13 fix), `d250c1fb` (rand 0.10 + openssl CVE fixes), `50b92365` (G2/G5/G7 user gap fixes), `98b40840` (normalize-stats output fix), `2640e90e` (BCE training mode), `eda7a0bb` (any-gpu version fix).
+
+**AI Role:** AI diagnosed γ=5 no-op, diagnosed EDM failure mode on binary data, implemented γ=13 fix, implemented BCE training mode including stable BCE-with-logits tensor math. Human called the pivot from EDM to BCE after observing the plateau pattern across all runs, and designed the Shape-Diffusion Signal Split architecture (match loss type to signal type at each cascade stage).
 
 ### 2026-05-15 — Quench EDM Training + Recipe Regression Diagnosis
 
