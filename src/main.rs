@@ -147,6 +147,10 @@ enum Cmd {
         /// Sponge Mesh: auto-retry on NaN/plateau (max 3 retries).
         #[arg(long)]
         sponge: bool,
+        /// BCE silhouette mode: no diffusion, BCE loss. Use with --anvil or --medium.
+        /// Trains shape specialists (Anvil-sil, Quench-sil) on binary mask data.
+        #[arg(long)]
+        bce: bool,
         /// GPU backend: auto, metal, cuda, vulkan, cpu.
         #[arg(long, default_value = "auto")]
         device: String,
@@ -1362,6 +1366,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             checkpoint_every,
             resume,
             sponge,
+            bce,
             device,
         } => {
             // Vulkan backend: any-gpu now powers the siloed MicroUNet path only.
@@ -1379,9 +1384,13 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 anyhow::bail!("vulkan backend requires --features vulkan. Rebuild with: cargo build --release --features vulkan --no-default-features");
             }
 
-            // Fix: default output to correct model filename based on tier
+            // Fix: default output to correct model filename based on tier + mode
             let output = if output == "pixel-forge-cinder.safetensors" {
-                if anvil {
+                if anvil && bce {
+                    "pixel-forge-anvil-sil.safetensors".to_string()
+                } else if medium && bce {
+                    "pixel-forge-quench-sil.safetensors".to_string()
+                } else if anvil {
                     "pixel-forge-anvil.safetensors".to_string()
                 } else if medium {
                     "pixel-forge-quench.safetensors".to_string()
@@ -1408,6 +1417,7 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 mixed_precision: fp16,
                 checkpoint_every,
                 resume,
+                bce,
                 ..Default::default()
             };
             if sponge {

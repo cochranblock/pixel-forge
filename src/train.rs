@@ -65,6 +65,9 @@ pub struct TrainConfig {
     pub checkpoint_every: usize,
     /// Resume from existing safetensors checkpoint. Loads weights before training.
     pub resume: Option<String>,
+    /// BCE silhouette mode: no diffusion, no noise, sigmoid + BCE loss.
+    /// Trains shape specialist (Anvil-sil, Quench-sil) — raw [0,1] pixel targets.
+    pub bce: bool,
 }
 
 impl Default for TrainConfig {
@@ -93,6 +96,7 @@ impl Default for TrainConfig {
             mixed_precision: false,
             checkpoint_every: 25,
             resume: None,
+            bce: false,
         }
     }
 }
@@ -890,6 +894,163 @@ fn train_inner(
     Ok(TrainStop::Complete { final_loss })
 }
 
+/// BCE training loop — no noise, no diffusion. Sigmoid + binary cross-entropy.
+/// Used for shape specialists: Anvil-sil (full-body) and Quench-sil (parts).
+fn train_bce_inner(
+    model: &dyn DiffusionModel,
+    varmap: &VarMap,
+    config: &TrainConfig,
+    dataset: &PackedDataset,
+    cond_dataset: Option<&PackedDataset>,
+    device: &Device,
+) -> Result<TrainStop> {
+    let n = dataset.labels.len();
+    let stride = dataset.stride;
+    let sz = config.img_size as usize;
+
+    let mut opt = nn::AdamW::new(varmap.all_vars(), nn::ParamsAdamW {
+        lr: config.lr,
+        weight_decay: 0.01,
+        ..Default::default()
+    })?;
+
+    let cfg_info = if config.cfg_dropout > 0.0 {
+        format!("cfg_drop={}", config.cfg_dropout)
+    } else {
+        "no-cfg".into()
+    };
+    println!("training: {} epochs, bs={}, lr={}, {} samples",
+        config.epochs, config.batch_size, config.lr, n);
+    println!("augmentation: h-flip (50%) + rotation (0/90/180/270)");
+    println!("recipe: BCE (no diffusion, BCE-with-logits) | {cfg_info} | ema=false");
+
+    let t0 = std::time::Instant::now();
+    let mut loss_history: Vec<f64> = Vec::with_capacity(config.epochs);
+
+    for epoch in 0..config.epochs {
+        let epoch_start = std::time::Instant::now();
+
+        let lr = if config.lr_min > 0.0 {
+            if epoch < config.warmup_epochs {
+                let frac = epoch as f64 / config.warmup_epochs.max(1) as f64;
+                config.lr_min + (config.lr - config.lr_min) * frac
+            } else {
+                let decay_epochs = config.epochs - config.warmup_epochs;
+                let frac = (epoch - config.warmup_epochs) as f64 / decay_epochs.max(1) as f64;
+                config.lr_min + 0.5 * (config.lr - config.lr_min)
+                    * (1.0 + (frac * std::f64::consts::PI).cos())
+            }
+        } else {
+            config.lr
+        };
+        opt.set_learning_rate(lr);
+
+        let mut indices: Vec<usize> = (0..n).collect();
+        indices.shuffle(&mut rand::rng());
+        let mut epoch_loss = 0.0f64;
+        let mut batch_count = 0usize;
+        let mut rng = rand::rng();
+
+        let num_batches = n.div_ceil(config.batch_size);
+        for batch_idx in 0..num_batches {
+            let start = batch_idx * config.batch_size;
+            let end = (start + config.batch_size).min(n);
+            let bs = end - start;
+
+            let mut batch_px = Vec::with_capacity(bs * stride);
+            let mut batch_super: Vec<u32> = Vec::with_capacity(bs);
+            let mut batch_tags: Vec<f32> = Vec::with_capacity(bs * crate::class_cond::NUM_TAGS);
+
+            for &idx in &indices[start..end] {
+                let src = idx * stride;
+                let mut sample = dataset.pixels[src..src + stride].to_vec();
+                // No palette swap / brightness — those break binary mask pixel values.
+                if rng.random_bool(0.5) { hflip(&mut sample, config.img_size); }
+                let rotations = rng.random_range(0..4u8);
+                for _ in 0..rotations { rot90_cw(&mut sample, config.img_size); }
+                // No centering — BCE needs raw [0,1] values as targets.
+                batch_px.extend_from_slice(&sample);
+
+                if config.cfg_dropout > 0.0 && rng.random_bool(config.cfg_dropout) {
+                    batch_super.push(crate::class_cond::CFG_NULL_SUPER);
+                    batch_tags.extend_from_slice(&crate::class_cond::CFG_NULL_TAGS);
+                } else {
+                    batch_super.push(dataset.super_ids[idx]);
+                    batch_tags.extend_from_slice(&dataset.tags[idx]);
+                }
+            }
+
+            let x_batch = Tensor::new(batch_px.as_slice(), device)?
+                .reshape((bs, 3, sz, sz))?;
+            let super_batch = Tensor::new(batch_super.as_slice(), device)?;
+            let tags_batch = Tensor::new(batch_tags.as_slice(), device)?
+                .reshape((bs, crate::class_cond::NUM_TAGS))?;
+
+            // Timestep is meaningless for BCE — pass zeros.
+            let t_zeros = Tensor::zeros((bs,), DType::F32, device)?;
+
+            // Optional conditioning: prepend cond channels (Anvil mask → Quench-BCE).
+            let x_input = if let Some(cond) = cond_dataset {
+                let mut cond_px = Vec::with_capacity(bs * stride);
+                for &idx in &indices[start..end] {
+                    let src = idx * stride;
+                    cond_px.extend_from_slice(&cond.pixels[src..src + stride]);
+                }
+                let cond_batch = Tensor::new(cond_px.as_slice(), device)?
+                    .reshape((bs, 3, sz, sz))?;
+                Tensor::cat(&[&cond_batch, &x_batch], 1)?
+            } else {
+                x_batch.clone()
+            };
+
+            let pred = model.forward(&x_input, &t_zeros, &super_batch, &tags_batch)?;
+
+            // Stable BCE with logits: max(p,0) − p·y + log(1 + exp(−|p|))
+            let relu_pred = ((&pred + pred.abs()?)? * 0.5f64)?;
+            let log1p_exp = pred.abs()?.neg()?.exp()?.affine(1.0, 1.0)?.log()?;
+            let loss = ((&relu_pred - (&pred * &x_batch)?)? + log1p_exp)?.mean_all()?;
+
+            opt.backward_step(&loss)?;
+            epoch_loss += loss.to_scalar::<f32>()? as f64;
+            batch_count += 1;
+        }
+
+        let avg_loss = if batch_count > 0 { epoch_loss / batch_count as f64 } else { 0.0 };
+        let elapsed = epoch_start.elapsed().as_secs_f32();
+
+        if avg_loss.is_nan() || avg_loss.is_infinite() {
+            println!("  epoch {}/{}: loss=NaN — aborting", epoch + 1, config.epochs);
+            return Ok(TrainStop::NanLoss(epoch));
+        }
+        loss_history.push(avg_loss);
+
+        if epoch % 5 == 0 || epoch == config.epochs - 1 {
+            println!("  epoch {}/{}: loss={:.6} lr={:.1e} ({:.1}s)",
+                epoch + 1, config.epochs, avg_loss, lr, elapsed);
+        }
+
+        if config.checkpoint_every > 0 && (epoch + 1) % config.checkpoint_every == 0 {
+            let cp = if config.checkpoint_every == 1 {
+                config.output.clone()
+            } else {
+                format!("{}.epoch{}", config.output, epoch + 1)
+            };
+            varmap.save(&cp)?;
+            crate::nanosign::sign_and_log(&cp)?;
+            println!("  checkpoint: {cp}");
+        }
+    }
+
+    println!("saving model to {}...", config.output);
+    varmap.save(&config.output)?;
+    crate::nanosign::sign_and_log(&config.output)?;
+    let file_size = std::fs::metadata(&config.output)?.len();
+    let final_loss = loss_history.last().copied().unwrap_or(0.0);
+    println!("done: {} ({:.1} MB) in {:.0}s total",
+        config.output, file_size as f64 / 1_048_576.0, t0.elapsed().as_secs_f32());
+    Ok(TrainStop::Complete { final_loss })
+}
+
 /// Train — dispatches to Micro, Tiny, Medium, or Anvil based on config.
 pub fn train(config: &TrainConfig) -> Result<TrainStop> {
     let device = crate::pipeline::best_device();
@@ -927,7 +1088,8 @@ pub fn train(config: &TrainConfig) -> Result<TrainStop> {
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
-        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
+        let dispatch = if config.bce { train_bce_inner as fn(&dyn DiffusionModel, &VarMap, &TrainConfig, &PackedDataset, Option<&PackedDataset>, &Device) -> Result<TrainStop> } else { train_inner };
+        dispatch(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
     } else if config.anvil {
         let model = AnvilUNet::new(vb)?;
         let params = AnvilUNet::param_count(&varmap);
@@ -937,7 +1099,8 @@ pub fn train(config: &TrainConfig) -> Result<TrainStop> {
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
-        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
+        let dispatch = if config.bce { train_bce_inner as fn(&dyn DiffusionModel, &VarMap, &TrainConfig, &PackedDataset, Option<&PackedDataset>, &Device) -> Result<TrainStop> } else { train_inner };
+        dispatch(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
     } else if config.medium {
         let model = MediumUNet::with_channels(vb, in_ch)?;
         let params = MediumUNet::param_count(&varmap);
@@ -947,7 +1110,8 @@ pub fn train(config: &TrainConfig) -> Result<TrainStop> {
             varmap.load(checkpoint)?;
             println!("resumed from {checkpoint}");
         }
-        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
+        let dispatch = if config.bce { train_bce_inner as fn(&dyn DiffusionModel, &VarMap, &TrainConfig, &PackedDataset, Option<&PackedDataset>, &Device) -> Result<TrainStop> } else { train_inner };
+        dispatch(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
     } else {
         let model = TinyUNet::with_channels(vb, in_ch)?;
         let params = TinyUNet::param_count(&varmap);
@@ -963,7 +1127,8 @@ pub fn train(config: &TrainConfig) -> Result<TrainStop> {
             }
             println!("resumed from {checkpoint}");
         }
-        train_inner(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
+        let dispatch = if config.bce { train_bce_inner as fn(&dyn DiffusionModel, &VarMap, &TrainConfig, &PackedDataset, Option<&PackedDataset>, &Device) -> Result<TrainStop> } else { train_inner };
+        dispatch(&model, &varmap, config, &dataset, cond_dataset.as_ref(), &device)?
     };
 
     Ok(stop)
