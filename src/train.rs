@@ -989,7 +989,8 @@ fn train_bce_inner(
             // Timestep is meaningless for BCE — pass zeros.
             let t_zeros = Tensor::zeros((bs,), DType::F32, device)?;
 
-            // Optional conditioning: prepend cond channels (Anvil mask → Quench-BCE).
+            // Conditioning: Quench-BCE takes Anvil mask as 6ch input.
+            // Anvil-BCE takes zeros — model generates from class embedding alone.
             let x_input = if let Some(cond) = cond_dataset {
                 let mut cond_px = Vec::with_capacity(bs * stride);
                 for &idx in &indices[start..end] {
@@ -1000,7 +1001,7 @@ fn train_bce_inner(
                     .reshape((bs, 3, sz, sz))?;
                 Tensor::cat(&[&cond_batch, &x_batch], 1)?
             } else {
-                x_batch.clone()
+                Tensor::zeros_like(&x_batch)?
             };
 
             let pred = model.forward(&x_input, &t_zeros, &super_batch, &tags_batch)?;
