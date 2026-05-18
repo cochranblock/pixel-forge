@@ -110,6 +110,17 @@
 
 ## Entries
 
+### 2026-05-18 — BCE Training Fixes: Denoising Prior + Zero-Init Inference
+
+**What:** Two training fixes that resolve BCE convergence issues observed after the initial Anvil-BCE run:
+
+**Zero-init for class-generative inference (`0b8ab101`):** Anvil-BCE was initializing training from the target image (clean silhouette), which teaches the model to reconstruct but not to generate. Changed to initialize from zeros (all-black input). The model must now learn to generate a silhouette from class conditioning alone — the correct framing for inference, where there is no target to start from. Loss trajectory unchanged; the model still converges from BCE's random-init baseline of ln(2) ≈ 0.693.
+
+**Target+noise denoising prior (`bd8e2bda`):** Added noise augmentation to BCE training: `x_input = target + noise * 0.3` (noisy version of the target), while the BCE target remains the clean binary mask. Creates a denoising prior — the model sees a corrupted version of the answer and must recover the exact binary output. This is the BCE analog to diffusion's noise schedule: it forces the model to learn robust structure rather than memorizing exact pixel patterns, improving generalization.
+
+**Commits:** `0b8ab101` (zero-init), `bd8e2bda` (noise augmentation)
+**AI Role:** AI implemented both fixes. Human directed the zero-init change (class-generative vs. reconstructive framing) and the noise-augmentation design (denoising prior for BCE robustness).
+
 ### 2026-05-17/18 — BCE Silhouette Pivot + γ=13 Diagnosis + Anvil-BCE Training
 
 **What:** Diagnosed why every EDM run plateau'd identically. Root cause: `EdmCoeffs::at()` hardcoded γ=5, but for σ_data=0.4007 the minimum 1/c_out² = 1/σ_data² ≈ 6.23 > 5, so γ=5 clamps **every single sample** — flat weighting identical to no Min-SNR at all. Fixed to γ=13 (`3f72254b`). Even with γ=13, Quench-color and Anvil-sil still plateau'd at epoch 6-11 — different model sizes, different data, same symptom. Diagnosis: diffusion is the wrong tool for binary mask generation regardless of weighting.
