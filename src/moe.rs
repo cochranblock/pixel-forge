@@ -350,10 +350,25 @@ pub fn sil_sample(
     println!("sil-sample: {count} masks, class={}, threshold={threshold}, raw={raw}", cond.name);
 
     for i in 0..count {
-        // Match training distribution: x_input = x_batch + noise*0.3
-        // At inference we have no x_batch, so feed scaled noise directly.
-        let noise = (train::seeded_noise(None, cond.super_id, i, img_size, &device)? * 0.3f64)?;
-        let logits = model.forward(&noise, &Tensor::zeros((1,), DType::F32, &device)?, &super_t, &tags_t)?;
+        // Iterative denoising: start with σ=0.3 noise (matches training distribution),
+        // use model output as soft prototype, re-noise with decreasing σ, repeat 5 steps.
+        let t_zero = Tensor::zeros((1,), DType::F32, &device)?;
+        let mut x = (train::seeded_noise(None, cond.super_id, i, img_size, &device)? * 0.3f64)?;
+        let steps = 5usize;
+        for step in 0..steps {
+            let logits_s = model.forward(&x, &t_zero, &super_t, &tags_t)?;
+            let probs_s = candle_nn::ops::sigmoid(&logits_s)?;
+            // soft binary: probs in [0,1] → shift to [-0.5, 0.5] to match normalized data range
+            let x_clean = (probs_s - 0.5f64)?;
+            let sigma = 0.3 * (1.0 - (step as f64 + 1.0) / steps as f64);
+            x = if sigma > 0.01 {
+                let step_noise = Tensor::randn(0f32, 1f32, x_clean.shape(), &device)?;
+                (&x_clean + (step_noise * sigma)?)?
+            } else {
+                x_clean
+            };
+        }
+        let logits = model.forward(&x, &t_zero, &super_t, &tags_t)?;
         let probs = candle_nn::ops::sigmoid(&logits)?;
         let display = if raw {
             probs.clone()
