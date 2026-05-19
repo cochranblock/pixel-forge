@@ -1,4 +1,8 @@
 /* Cochran Block brand theme — kova palette (overrides coal) */
+
+/* Hard baseline — prevents any white flash before theme class is applied */
+html, body { background: #0a0a0f; color: #e2e8f0; }
+
 .coal { --bg: #0a0a0f; --fg: #e2e8f0; --sidebar-bg: #0d0d18; --sidebar-fg: #e2e8f0; --sidebar-non-existant: #64748b; --sidebar-active: #00d4ff; --sidebar-spacer: #14141f; --scrollbar: #14141f; --icons: #00d4ff; --icons-hover: #a855f7; --links: #00d4ff; --inline-code-color: #c084fc; --theme-popup-bg: #14141f; --theme-popup-border: #00d4ff; --theme-hover: #14141f; --quote-bg: #14141f; --quote-border: #14b8a6; --table-border-color: #1e2a3a; --table-header-bg: #14141f; --table-alternate-bg: #0d0d18; --searchbar-border-color: #00d4ff; --searchbar-bg: #14141f; --searchbar-fg: #e2e8f0; --searchresults-header-fg: #00d4ff; --searchresults-border-color: #1e2a3a; --searchresults-li-bg: #14141f; --search-mark-bg: #a855f7; }
 .sidebar { background: #0d0d18; border-right: 1px solid #1e2a3a; }
 .sidebar .sidebar-scrollbox { padding-top: 0.5rem; }
