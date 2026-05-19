@@ -326,6 +326,53 @@ pub fn anvil_sample(
     Ok(images)
 }
 
+/// BCE silhouette sampler. Single forward pass: noise → logits → sigmoid → threshold → binary PNG.
+/// Used to visually inspect Anvil-sil or Quench-sil checkpoint quality.
+pub fn sil_sample(
+    model_path: &str,
+    cond: &crate::class_cond::ClassCond,
+    img_size: u32,
+    count: u32,
+    threshold: f32,
+) -> Result<Vec<RgbaImage>> {
+    let device = crate::pipeline::best_device();
+
+    crate::nanosign::verify_or_bail(model_path)?;
+    let mut vm = VarMap::new();
+    let vb = VarBuilder::from_varmap(&vm, DType::F32, &device);
+    let model = AnvilUNet::new(vb)?;
+    crate::quantize::load_varmap(&mut vm, model_path)?;
+
+    let (super_t, tags_t, _, _) = train::cond_tensors(cond, 1, &device)?;
+    let sz = img_size as usize;
+    let mut images = Vec::new();
+
+    println!("sil-sample: {count} masks, class={}, threshold={threshold}", cond.name);
+
+    for i in 0..count {
+        let noise = train::seeded_noise(None, cond.super_id, i, img_size, &device)?;
+        let logits = model.forward(&noise, &Tensor::zeros((1,), DType::F32, &device)?, &super_t, &tags_t)?;
+        // sigmoid + threshold → binary [0,1]
+        let probs = candle_nn::ops::sigmoid(&logits)?;
+        let mask = probs.gt(threshold as f64)?.to_dtype(DType::F32)?;
+        // render: white foreground (1→255), black background (0→0), fully opaque
+        let mask_u8 = (mask.squeeze(0)? * 255.0)?.to_dtype(candle_core::DType::U8)?;
+        let pixels = mask_u8.permute((1, 2, 0))?.flatten_all()?.to_vec1::<u8>()?;
+        let mut img = RgbaImage::new(img_size, img_size);
+        for y in 0..img_size {
+            for x in 0..img_size {
+                let idx = (y * img_size + x) as usize * 3;
+                let v = pixels[idx];
+                img.put_pixel(x, y, image::Rgba([v, v, v, 255]));
+            }
+        }
+        images.push(img);
+        println!("  mask {}/{count}", i + 1);
+    }
+
+    Ok(images)
+}
+
 /// MoE cascade with discriminator quality gate.
 #[allow(clippy::too_many_arguments)]
 pub fn cascade_with_gate(

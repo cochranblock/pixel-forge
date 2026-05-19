@@ -683,6 +683,24 @@ enum Cmd {
         #[arg(long, default_value_t = 3.0)]
         cfg: f64,
     },
+    /// Sample silhouette masks from a BCE-trained Anvil-sil model.
+    /// Single forward pass: noise → sigmoid → threshold → binary PNG.
+    SilSample {
+        /// Class to generate: character, dragon, slime, etc.
+        class: String,
+        /// Anvil-sil model path.
+        #[arg(long, default_value = "pixel-forge-anvil-sil.safetensors")]
+        model: String,
+        /// Number of masks to generate.
+        #[arg(short, long, default_value_t = 4)]
+        count: u32,
+        /// Sigmoid threshold for binarization.
+        #[arg(long, default_value_t = 0.5)]
+        threshold: f32,
+        /// Output file (grid if count > 1).
+        #[arg(short, long, default_value = "sil.png")]
+        output: String,
+    },
     /// Tiered pipeline: silo shape → Cinder detail → palette quantize.
     /// Produces sharper, more class-faithful sprites by routing through
     /// a per-class MicroUNet before Cinder refinement.
@@ -2237,6 +2255,17 @@ PackageLicenseDeclared: MIT OR Apache-2.0
                 processed[0].save(&output)?;
             } else {
                 let sheet_img = sheet::pack_grid(&processed, 8);
+                sheet_img.save(&output)?;
+            }
+            println!("saved: {output}");
+        }
+        Cmd::SilSample { class, model, count, threshold, output } => {
+            let cond = class_cond::lookup(&class.to_lowercase());
+            let masks = moe::sil_sample(&model, &cond, 32, count, threshold)?;
+            if count == 1 {
+                masks[0].save(&output)?;
+            } else {
+                let sheet_img = sheet::pack_grid(&masks, 8);
                 sheet_img.save(&output)?;
             }
             println!("saved: {output}");
