@@ -327,13 +327,14 @@ pub fn anvil_sample(
 }
 
 /// BCE silhouette sampler. Single forward pass: noise → logits → sigmoid → threshold → binary PNG.
-/// Used to visually inspect Anvil-sil or Quench-sil checkpoint quality.
+/// With raw=true, outputs the probability map (0–255 grayscale) instead of a binary mask.
 pub fn sil_sample(
     model_path: &str,
     cond: &crate::class_cond::ClassCond,
     img_size: u32,
     count: u32,
     threshold: f32,
+    raw: bool,
 ) -> Result<Vec<RgbaImage>> {
     let device = crate::pipeline::best_device();
 
@@ -344,25 +345,27 @@ pub fn sil_sample(
     crate::quantize::load_varmap(&mut vm, model_path)?;
 
     let (super_t, tags_t, _, _) = train::cond_tensors(cond, 1, &device)?;
-    let sz = img_size as usize;
     let mut images = Vec::new();
 
-    println!("sil-sample: {count} masks, class={}, threshold={threshold}", cond.name);
+    println!("sil-sample: {count} masks, class={}, threshold={threshold}, raw={raw}", cond.name);
 
     for i in 0..count {
         let noise = train::seeded_noise(None, cond.super_id, i, img_size, &device)?;
         let logits = model.forward(&noise, &Tensor::zeros((1,), DType::F32, &device)?, &super_t, &tags_t)?;
-        // sigmoid + threshold → binary [0,1]
         let probs = candle_nn::ops::sigmoid(&logits)?;
-        let mask = probs.gt(threshold as f64)?.to_dtype(DType::F32)?;
-        // render: white foreground (1→255), black background (0→0), fully opaque
-        let mask_u8 = (mask.squeeze(0)? * 255.0)?.to_dtype(candle_core::DType::U8)?;
-        let pixels = mask_u8.permute((1, 2, 0))?.flatten_all()?.to_vec1::<u8>()?;
+        let display = if raw {
+            probs.clone()
+        } else {
+            probs.gt(threshold as f64)?.to_dtype(DType::F32)?
+        };
+        // squeeze batch dim, take channel 0 (all 3 channels identical for BCE)
+        let display_sq = display.squeeze(0)?;
+        let display_u8 = (display_sq.narrow(0, 0, 1)?.squeeze(0)? * 255.0)?.to_dtype(candle_core::DType::U8)?;
+        let pixels = display_u8.flatten_all()?.to_vec1::<u8>()?;
         let mut img = RgbaImage::new(img_size, img_size);
         for y in 0..img_size {
             for x in 0..img_size {
-                let idx = (y * img_size + x) as usize * 3;
-                let v = pixels[idx];
+                let v = pixels[(y * img_size + x) as usize];
                 img.put_pixel(x, y, image::Rgba([v, v, v, 255]));
             }
         }

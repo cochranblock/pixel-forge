@@ -697,6 +697,9 @@ enum Cmd {
         /// Sigmoid threshold for binarization.
         #[arg(long, default_value_t = 0.5)]
         threshold: f32,
+        /// Output raw probability map (0–255 grayscale) instead of binary mask.
+        #[arg(long)]
+        raw: bool,
         /// Output file (grid if count > 1).
         #[arg(short, long, default_value = "sil.png")]
         output: String,
@@ -2259,9 +2262,9 @@ PackageLicenseDeclared: MIT OR Apache-2.0
             }
             println!("saved: {output}");
         }
-        Cmd::SilSample { class, model, count, threshold, output } => {
+        Cmd::SilSample { class, model, count, threshold, raw, output } => {
             let cond = class_cond::lookup(&class.to_lowercase());
-            let masks = moe::sil_sample(&model, &cond, 32, count, threshold)?;
+            let masks = moe::sil_sample(&model, &cond, 32, count, threshold, raw)?;
             if count == 1 {
                 masks[0].save(&output)?;
             } else {
