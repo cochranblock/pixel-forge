@@ -350,7 +350,9 @@ pub fn sil_sample(
     println!("sil-sample: {count} masks, class={}, threshold={threshold}, raw={raw}", cond.name);
 
     for i in 0..count {
-        let noise = train::seeded_noise(None, cond.super_id, i, img_size, &device)?;
+        // Match training distribution: x_input = x_batch + noise*0.3
+        // At inference we have no x_batch, so feed scaled noise directly.
+        let noise = (train::seeded_noise(None, cond.super_id, i, img_size, &device)? * 0.3f64)?;
         let logits = model.forward(&noise, &Tensor::zeros((1,), DType::F32, &device)?, &super_t, &tags_t)?;
         let probs = candle_nn::ops::sigmoid(&logits)?;
         let display = if raw {
