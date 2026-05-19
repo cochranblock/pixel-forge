@@ -28,6 +28,8 @@ Trains and runs Karras EDM diffusion models that generate 32×32 pixel art sprit
 
 ## Documentation
 
+**[cochranblock.github.io/pixel-forge](https://cochranblock.github.io/pixel-forge/)** — full mdBook docs.
+
 This README is the entry point. The actual docs live in two source-of-truth files at the root of the repo:
 
 - **[PROOF_OF_ARTIFACTS.md](PROOF_OF_ARTIFACTS.md)** — what exists today, status, source-linked. Build output, model tiers, CLI commands, platforms, training data, bug history, recipe migration status. If you want to know what this project *does*, read this.
@@ -38,7 +40,7 @@ Supporting docs:
 - [ATTRIBUTION.md](ATTRIBUTION.md) — credits
 - [CONTRIBUTORS.md](CONTRIBUTORS.md) — contributor list
 - [docs/compression_map.md](docs/compression_map.md) — P13 tokenization (fN/tN/MN/cN)
-- [docs/MOE_PLAN.md](docs/MOE_PLAN.md) — MoE cascade design
+- [planning/MOE_PLAN.md](planning/MOE_PLAN.md) — MoE cascade design
 
 ---
 

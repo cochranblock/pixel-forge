@@ -9,6 +9,7 @@ edition = "2024"
 description = "Pixel art game asset generator. Stardew/Starbound quality. Local-first, no cloud."
 license = "Unlicense"
 repository = "https://github.com/cochranblock/pixel-forge"
+documentation = "https://cochranblock.github.io/pixel-forge/"
 authors = ["Cochran Block"]
 include = [
     "src/**/*",

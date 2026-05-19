@@ -1,0 +1,13 @@
+[book]
+title = "pixel-forge"
+description = "On-device AI pixel art diffusion. MoE cascade, LoRA, MicroUNet."
+src = "src"
+language = "en"
+
+[output.html]
+git-repository-url = "https://github.com/cochranblock/pixel-forge"
+site-url = "/pixel-forge/"
+additional-css = ["theme/custom.css"]
+additional-js = ["theme/force-theme.js"]
+default-theme = "coal"
+preferred-dark-theme = "coal"
