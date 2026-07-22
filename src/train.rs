@@ -1002,8 +1002,7 @@ fn train_bce_inner(
                     .reshape((bs, 3, sz, sz))?;
                 Tensor::cat(&[&cond_batch, &x_batch], 1)?
             } else {
-                let noise = Tensor::randn(0f32, 1f32, x_batch.shape(), device)?;
-                (&x_batch + (&noise * 0.3f64)?)?
+                Tensor::zeros_like(&x_batch)?
             };
 
             let pred = model.forward(&x_input, &t_zeros, &super_batch, &tags_batch)?;
